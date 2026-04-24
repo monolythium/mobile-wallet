@@ -16,6 +16,7 @@
     "tauri:android:build": "tauri android build"
   },
   "dependencies": {
+    "@monolythium/core-sdk": "file:../mono-core-sdk/packages/ts",
     "@tauri-apps/api": "^2.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

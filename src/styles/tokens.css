@@ -1,0 +1,56 @@
+/* Monolythium Wallet Mobile — design tokens
+   Subset of designs/styles/tokens.css adapted for the mobile bundle.
+   Liquid-glass charcoal + gold-as-primary discipline per design_handoff_monarch. */
+
+:root {
+  /* Typography */
+  --f-sans: "IBM Plex Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Canvas */
+  --ink-000: #0a0a0c;
+  --ink-050: #0d0e18;
+  --ink-100: #10121c;
+  --ink-200: #151723;
+  --ink-300: #1b1e2c;
+  --ink-400: #232638;
+  --ink-500: #2c3044;
+
+  /* Foreground */
+  --fg-100: #ecedf3;
+  --fg-200: #c9ccd8;
+  --fg-300: #8c90a3;
+  --fg-400: #646879;
+  --fg-500: #464a5c;
+  --fg-600: #2d3040;
+  --fg-700: #1a1c28;
+
+  /* Gold = primary action only — never decorative */
+  --gold: #f2b441;
+  --gold-hi: #ffcf6e;
+  --gold-lo: #c98a2a;
+  --gold-bg: rgba(242, 180, 65, 0.14);
+  --gold-glow: 242, 180, 65;
+
+  /* Status */
+  --ok: #6ad39a;
+  --warn: #f4c97a;
+  --err: #ff8a9a;
+
+  /* Glass */
+  --glass-fill: rgba(255, 255, 255, 0.04);
+  --glass-stroke: rgba(255, 255, 255, 0.08);
+  --glass-stroke-hi: rgba(255, 255, 255, 0.14);
+  --glass-inner: rgba(255, 255, 255, 0.06);
+  --glass-blur: 20px;
+
+  /* Radii */
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-pill: 999px;
+
+  /* Motion */
+  --e-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --e-std: cubic-bezier(0.4, 0, 0.2, 1);
+}
