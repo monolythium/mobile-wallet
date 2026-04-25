@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "description": "Monolythium mobile wallet (Tauri 2 mobile, iOS + Android, React 19)",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
