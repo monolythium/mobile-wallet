@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2021"
 rust-version = "1.77"
 description = "Monolythium mobile wallet (Tauri 2 mobile, iOS + Android)"
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 [lib]
