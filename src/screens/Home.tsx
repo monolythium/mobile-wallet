@@ -10,6 +10,10 @@ interface Props {
   status: ChainStatus | null;
   statusError: string | null;
   openOperation: (req: OperationRequest) => void;
+  /** Scan affordance: opens the full-screen QR scanner. The scanned
+   *  payload routes through `parseDeepLink` and back into either a Send /
+   *  Sign sheet or a WalletConnect pairing. */
+  onScan: () => void;
 }
 
 const DEMO_TOKENS = [
@@ -27,7 +31,7 @@ const DEMO_TXS = [
 const fmt = (n: number, f = 2) =>
   n.toLocaleString(undefined, { minimumFractionDigits: f, maximumFractionDigits: f });
 
-export function Home({ status, statusError, openOperation }: Props) {
+export function Home({ status, statusError, openOperation, onScan }: Props) {
   const totalUsd = DEMO_TOKENS.reduce((a, t) => a + t.amount * t.priceUsd, 0);
 
   return (
@@ -130,6 +134,16 @@ export function Home({ status, statusError, openOperation }: Props) {
               <Icon name="stake" size={18} />
             </span>
             <span>Stake</span>
+          </button>
+          <button
+            className="mw-act"
+            onClick={onScan}
+            aria-label="Scan QR code"
+          >
+            <span className="ico">
+              <Icon name="qr" size={18} />
+            </span>
+            <span>Scan</span>
           </button>
         </div>
       </div>
