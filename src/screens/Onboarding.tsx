@@ -2,23 +2,27 @@
 // Two paths:
 //   1. Biometric available — prompt the user to enrol Touch ID / Face ID /
 //      fingerprint. We still ask for a password as a fallback (lost device,
-//      sensor failure) and persist it to the platform keystore.
+//      sensor failure) and use it to derive the KEK.
 //   2. Biometric unavailable (desktop dev, simulator without enrolled
 //      finger, etc.) — password-only.
 //
-// The persisted secret is the password itself for now. When mono-core-sdk
-// lands a Signer trait, that secret will become a KEK derived via
-// password+salt and the keystore will hold the KEK rather than the password
-// directly. Tracked at:
-//   TODO(monolythium-vision): swap stored password for KDF-derived KEK
-//     once mono-core-sdk Signer is available.
+// Stage 4: the password is no longer persisted. Onboarding now:
+//   1. Generates a random 32-byte device-key.
+//   2. Generates a random 16-byte salt.
+//   3. Derives a 32-byte KEK = Argon2id(password, salt, params).
+//   4. AES-GCM-encrypts (a) the KEK under the device-key (so biometric
+//      unlock can recover the KEK without the password) and (b) a fresh
+//      vault payload under the KEK.
+//   5. Persists the device-key in the platform keystore + the encrypted
+//      envelope (salt + params + ciphertexts) in `<app data>/vault.v1.json`.
+// The plaintext password never leaves this screen.
 
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
 import {
   authenticateBiometric,
   biometricStatus,
-  setUnlockSecret,
+  bootstrapVault,
   type AuthError,
   type BiometricStatus,
 } from "../sdk/auth";
@@ -27,7 +31,7 @@ interface Props {
   onDone: () => void;
 }
 
-type Step = "loading" | "intro" | "password" | "enrolling" | "done";
+type Step = "loading" | "intro" | "password" | "deriving" | "enrolling" | "done";
 
 const MIN_PASSWORD_LEN = 8;
 
@@ -66,12 +70,45 @@ export function Onboarding({ onDone }: Props) {
       return;
     }
 
-    setStep("enrolling");
+    // Step 1: derive the KEK + encrypt the envelope. Argon2id at 32 MiB / t=2
+    // is ~200ms on modern phone webviews — short enough to skip a progress
+    // ring, long enough to warrant a "deriving" step instead of a freeze.
+    setStep("deriving");
 
-    // If biometrics are available, run the enrolment prompt now so the
-    // OS records a successful authentication for this app and surfaces
-    // the platform-specific permission UX (Face ID consent, etc.).
+    try {
+      await bootstrapVault(password);
+    } catch (cause) {
+      const err = cause as AuthError;
+      if (err?.kind === "Unavailable") {
+        // Desktop dev path: keystore not available. Surface as a non-blocking
+        // warning so the user can still demo the flow without a real
+        // keystore — the on-disk envelope was already wiped by bootstrapVault
+        // in this case, so we land on a clean state.
+        setError(
+          "Keystore not available on this host build. Wallet runs in demo mode.",
+        );
+        setStep("done");
+        // Wipe local entry fields after surfacing the error.
+        setPassword("");
+        setConfirm("");
+        return;
+      }
+      setError(`Could not save vault: ${err?.message ?? "unknown"}`);
+      setStep("password");
+      return;
+    } finally {
+      // Don't keep the plaintext around any longer than necessary. React
+      // strings are immutable so we can't actively zero, but we can drop
+      // the references — that's the best a webview can do.
+      setPassword("");
+      setConfirm("");
+    }
+
+    // Step 2: enrol biometrics (optional, mobile-only). Running this AFTER
+    // the vault is on disk means a sensor cancellation doesn't block
+    // onboarding — the user still has a working password fallback.
     if (bio?.available) {
+      setStep("enrolling");
       try {
         await authenticateBiometric(
           "Enrol biometric authorisation for Monolythium Wallet",
@@ -80,30 +117,9 @@ export function Onboarding({ onDone }: Props) {
         const err = cause as AuthError;
         if (err?.kind === "Cancelled") {
           setError("Biometric enrolment cancelled. Continuing with password only.");
-          // Keep going — password is still valid.
         } else if (err?.kind !== "Unavailable") {
           setError(`Biometric enrolment failed: ${err?.message ?? "unknown"}`);
         }
-      }
-    }
-
-    // Persist the password to the platform keystore. On desktop hosts this
-    // throws `Unavailable`; surface that as a non-blocking warning so the
-    // user can still demo the flow without a real keystore.
-    try {
-      await setUnlockSecret(password);
-    } catch (cause) {
-      const err = cause as AuthError;
-      if (err?.kind === "Unavailable") {
-        // Desktop dev path: secret won't survive a restart, but the UI
-        // flow still completes so the user sees the rest of the app.
-        setError(
-          "Keystore not available on this host build. Wallet runs in demo mode.",
-        );
-      } else {
-        setError(`Could not save secret: ${err?.message ?? "unknown"}`);
-        setStep("password");
-        return;
       }
     }
 
@@ -162,11 +178,15 @@ export function Onboarding({ onDone }: Props) {
               </div>
               <div className="mw-kv">
                 <div className="k">Storage</div>
-                <div className="v">Platform keystore</div>
+                <div className="v">Platform keystore + encrypted vault file</div>
+              </div>
+              <div className="mw-kv">
+                <div className="k">KDF</div>
+                <div className="v">Argon2id · 32 MiB · t=2</div>
               </div>
               <div className="mw-kv">
                 <div className="k">Recovery</div>
-                <div className="v">12-word seed (Stage 4)</div>
+                <div className="v">12-word seed (Stage 5)</div>
               </div>
             </div>
 
@@ -194,8 +214,9 @@ export function Onboarding({ onDone }: Props) {
                   lineHeight: 1.55,
                 }}
               >
-                At least {MIN_PASSWORD_LEN} characters. This unlocks the wallet
-                when biometrics aren't available.
+                At least {MIN_PASSWORD_LEN} characters. We never store your
+                password — it's run through Argon2id to derive a key that
+                unlocks your wallet.
               </p>
               <input
                 type="password"
@@ -244,6 +265,18 @@ export function Onboarding({ onDone }: Props) {
               {bio?.available ? `Enrol ${sensorName(bio)}` : "Save password"}
             </button>
           </>
+        )}
+
+        {step === "deriving" && (
+          <div className="mw-card mw-auth">
+            <div className="mw-spin" aria-hidden="true" />
+            <div style={{ fontSize: 16, fontWeight: 500 }}>
+              Deriving your key…
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--fg-300)", maxWidth: 280, lineHeight: 1.55, textAlign: "center" }}>
+              Argon2id · 32 MiB · t=2. This runs entirely on this device.
+            </div>
+          </div>
         )}
 
         {step === "enrolling" && (

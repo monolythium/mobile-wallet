@@ -4,6 +4,7 @@
 // Android Studio.
 
 mod auth;
+mod vault;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +15,10 @@ pub fn run() {
         auth::keychain_set,
         auth::keychain_get,
         auth::keychain_delete,
+        vault::vault_exists,
+        vault::vault_read,
+        vault::vault_write,
+        vault::vault_delete,
     ]);
 
     let builder = configure_mobile_plugins(builder);
