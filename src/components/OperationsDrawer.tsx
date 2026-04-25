@@ -6,10 +6,23 @@
 // keychain). On mobile the sheet rises from the bottom and the auth step
 // surfaces a Face ID / Touch ID / fingerprint affordance.
 //
+// Stage 3 wires real biometric auth via `authorizeOperation` from
+// `sdk/auth.ts`. The chain is:
+//   1. Try the OS biometric sensor (Touch ID / Face ID / fingerprint).
+//   2. If biometric is unavailable, cancelled, or fails, fall back to a
+//      password challenge that's verified against the secret persisted
+//      to the platform keystore at onboarding time.
+//
 // AI is advisory, never autonomous (per design_handoff_monarch).
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icon";
+import {
+  authorizeOperation,
+  biometricStatus,
+  type AuthError,
+  type BiometricStatus,
+} from "../sdk/auth";
 
 export type OperationKind = "send" | "receive" | "stake" | "buy" | "bridge" | "sign";
 
@@ -36,12 +49,14 @@ interface Props {
   onClose: () => void;
 }
 
-const AUTH_DURATION_MS = 1100;
-
 export function OperationsDrawer({ request, onClose }: Props) {
   const [state, setState] = useState<OperationState>("preview");
   const [receipt, setReceipt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [bio, setBio] = useState<BiometricStatus | null>(null);
+  const [authMode, setAuthMode] = useState<"biometric" | "password">("biometric");
+  const [password, setPassword] = useState("");
+  const passwordResolverRef = useRef<((value: string | null) => void) | null>(null);
 
   // Reset whenever a fresh request arrives.
   useEffect(() => {
@@ -49,16 +64,69 @@ export function OperationsDrawer({ request, onClose }: Props) {
       setState("preview");
       setReceipt(null);
       setError(null);
+      setAuthMode("biometric");
+      setPassword("");
+      passwordResolverRef.current = null;
     }
   }, [request]);
 
-  // auth -> executing transition is fully synthetic in this scaffold
-  // (real biometric prompt lands in Stage 3 via the Tauri biometric plugin).
+  // Probe biometric capability when the drawer opens. Cheap call (returns
+  // cached status from the OS); avoids a flash of the wrong UI on entry.
   useEffect(() => {
-    if (state !== "auth") return;
-    const id = setTimeout(() => setState("executing"), AUTH_DURATION_MS);
-    return () => clearTimeout(id);
-  }, [state]);
+    if (!request) return;
+    let cancelled = false;
+    void biometricStatus().then((s) => {
+      if (!cancelled) setBio(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [request]);
+
+  // auth -> executing transition runs the full biometric+password flow.
+  useEffect(() => {
+    if (state !== "auth" || !request) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const ok = await authorizeOperation(request.summary, () =>
+          new Promise<string | null>((resolve) => {
+            // Stash the resolver so the password sub-form below can
+            // complete the promise. Switching to "password" mode reveals
+            // the input.
+            passwordResolverRef.current = resolve;
+            setAuthMode("password");
+          }),
+        );
+        if (cancelled) return;
+        if (ok) {
+          setState("executing");
+        } else {
+          setError("authorisation failed");
+          setState("done");
+        }
+      } catch (cause) {
+        if (cancelled) return;
+        const err = cause as AuthError;
+        if (err?.kind === "Cancelled") {
+          // User backed out — return to preview rather than failing the op.
+          setState("preview");
+          return;
+        }
+        setError(err?.message ?? "authorisation failed");
+        setState("done");
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+      // Leaving the auth state without a resolution = cancellation.
+      if (passwordResolverRef.current) {
+        passwordResolverRef.current(null);
+        passwordResolverRef.current = null;
+      }
+    };
+  }, [state, request]);
 
   // executing -> done transition runs the request's execute() if present,
   // otherwise mocks a hash so the UI flow is exercised end-to-end.
@@ -85,6 +153,23 @@ export function OperationsDrawer({ request, onClose }: Props) {
     };
   }, [state, request]);
 
+  const submitPassword = () => {
+    const r = passwordResolverRef.current;
+    passwordResolverRef.current = null;
+    if (r) r(password);
+  };
+
+  const cancelPassword = () => {
+    const r = passwordResolverRef.current;
+    passwordResolverRef.current = null;
+    if (r) r(null);
+    setState("preview");
+    setAuthMode("biometric");
+    setPassword("");
+  };
+
+  const sensorLabel = useMemo(() => sensorLabelFor(bio), [bio]);
+
   if (!request) return null;
 
   return (
@@ -106,9 +191,24 @@ export function OperationsDrawer({ request, onClose }: Props) {
 
         <div className="mw-sheet__body">
           {state === "preview" && (
-            <PreviewBody summary={request.summary} details={request.details} />
+            <PreviewBody
+              summary={request.summary}
+              details={request.details}
+              sensorLabel={sensorLabel}
+            />
           )}
-          {state === "auth" && <AuthBody summary={request.summary} />}
+          {state === "auth" && authMode === "biometric" && (
+            <AuthBody summary={request.summary} sensorLabel={sensorLabel} />
+          )}
+          {state === "auth" && authMode === "password" && (
+            <PasswordBody
+              summary={request.summary}
+              password={password}
+              setPassword={setPassword}
+              onSubmit={submitPassword}
+              onCancel={cancelPassword}
+            />
+          )}
           {state === "executing" && <ExecutingBody summary={request.summary} />}
           {state === "done" && <DoneBody receipt={receipt} error={error} />}
         </div>
@@ -123,12 +223,21 @@ export function OperationsDrawer({ request, onClose }: Props) {
               {request.confirmLabel ?? "Authorize"}
             </button>
           )}
-          {state === "auth" && (
+          {state === "auth" && authMode === "biometric" && (
             <button
               className="mw-btn mw-btn--block"
               onClick={() => setState("preview")}
             >
               Cancel
+            </button>
+          )}
+          {state === "auth" && authMode === "password" && (
+            <button
+              className="mw-btn mw-btn--primary mw-btn--block"
+              onClick={submitPassword}
+              disabled={password.length === 0}
+            >
+              Unlock
             </button>
           )}
           {state === "executing" && (
@@ -150,9 +259,11 @@ export function OperationsDrawer({ request, onClose }: Props) {
 function PreviewBody({
   summary,
   details,
+  sensorLabel,
 }: {
   summary: string;
   details: OperationKeyValue[];
+  sensorLabel: string;
 }) {
   return (
     <>
@@ -181,23 +292,90 @@ function PreviewBody({
           padding: "0 4px",
         }}
       >
-        AI is advisory. Every destructive action requires biometric authorization on
+        AI is advisory. Every destructive action requires {sensorLabel} on
         this device.
       </p>
     </>
   );
 }
 
-function AuthBody({ summary }: { summary: string }) {
+function AuthBody({ summary, sensorLabel }: { summary: string; sensorLabel: string }) {
   return (
     <div className="mw-auth">
       <div className="mw-auth__ring" aria-hidden="true">
         <Icon name="face" size={44} />
       </div>
-      <div style={{ fontSize: 16, fontWeight: 500 }}>Awaiting biometric</div>
+      <div style={{ fontSize: 16, fontWeight: 500 }}>Awaiting {sensorLabel}</div>
       <div style={{ fontSize: 12.5, color: "var(--fg-300)", maxWidth: 280, lineHeight: 1.55 }}>
         {summary}
       </div>
+    </div>
+  );
+}
+
+function PasswordBody({
+  summary,
+  password,
+  setPassword,
+  onSubmit,
+  onCancel,
+}: {
+  summary: string;
+  password: string;
+  setPassword: (s: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="mw-auth">
+      <div className="mw-auth__ring" aria-hidden="true">
+        <Icon name="key" size={36} />
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 500 }}>Enter wallet password</div>
+      <div style={{ fontSize: 12.5, color: "var(--fg-300)", maxWidth: 280, lineHeight: 1.55 }}>
+        {summary}
+      </div>
+      <input
+        type="password"
+        autoFocus
+        autoComplete="off"
+        autoCapitalize="none"
+        spellCheck={false}
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && password.length > 0) onSubmit();
+          if (e.key === "Escape") onCancel();
+        }}
+        className="mw-input"
+        placeholder="••••••••"
+        aria-label="Wallet password"
+        style={{
+          width: "100%",
+          maxWidth: 280,
+          padding: "10px 12px",
+          fontSize: 14,
+          background: "rgba(255,255,255,0.04)",
+          border: "1px solid rgba(255,255,255,0.12)",
+          borderRadius: 10,
+          color: "var(--fg-100)",
+          outline: "none",
+        }}
+      />
+      <button
+        type="button"
+        onClick={onCancel}
+        style={{
+          background: "none",
+          border: "none",
+          color: "var(--fg-400)",
+          fontSize: 12,
+          marginTop: 4,
+          cursor: "pointer",
+        }}
+      >
+        Cancel
+      </button>
     </div>
   );
 }
@@ -241,6 +419,22 @@ function DoneBody({ receipt, error }: { receipt: string | null; error: string | 
       )}
     </div>
   );
+}
+
+function sensorLabelFor(bio: BiometricStatus | null): string {
+  if (!bio || !bio.available) return "biometric or password";
+  switch ((bio.kind ?? "").toLowerCase()) {
+    case "face":
+    case "faceid":
+      return "Face ID";
+    case "touch":
+    case "touchid":
+      return "Touch ID";
+    case "fingerprint":
+      return "fingerprint";
+    default:
+      return "biometric";
+  }
 }
 
 async function mockExecute(): Promise<string> {

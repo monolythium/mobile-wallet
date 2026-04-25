@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Mobile-only capability set. Biometric auth (Touch ID / Face ID / fingerprint) and platform keystore (iOS Keychain Services / Android Keystore). Limited to iOS + Android so desktop host builds don't error on missing plugins.",
+  "windows": ["main"],
+  "platforms": ["iOS", "android"],
+  "permissions": [
+    "biometric:default",
+    "keystore:default"
+  ]
+}

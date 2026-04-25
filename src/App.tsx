@@ -19,7 +19,9 @@ import { Operator } from "./screens/Operator";
 import { Audit } from "./screens/Audit";
 import { Alerts } from "./screens/Alerts";
 import { Ask } from "./screens/Ask";
+import { Onboarding } from "./screens/Onboarding";
 import { fetchChainStatus, type ChainStatus } from "./sdk/client";
+import { hasUnlockSecret } from "./sdk/auth";
 import "./styles/tokens.css";
 import "./styles/wallet.css";
 
@@ -35,16 +37,36 @@ const TABS: { k: Tab; label: string; icon: IconName }[] = [
 
 type MoreScreen = "menu" | "keys" | "audit";
 
+type OnboardingState = "checking" | "needed" | "complete";
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("home");
   const [more, setMore] = useState<MoreScreen>("menu");
   const [operation, setOperation] = useState<OperationRequest | null>(null);
   const [status, setStatus] = useState<ChainStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [onboarding, setOnboarding] = useState<OnboardingState>("checking");
+
+  // Probe the platform keystore once on mount. If a secret is present the
+  // device has been onboarded; otherwise show the onboarding screen first.
+  // Stage 3 wires this through `tauri-plugin-keystore` (iOS Keychain
+  // Services / Android Keystore). Desktop hosts always see "needed" — the
+  // onboarding flow then runs in demo mode (no keystore persistence).
+  useEffect(() => {
+    let cancelled = false;
+    void hasUnlockSecret().then((present) => {
+      if (cancelled) return;
+      setOnboarding(present ? "complete" : "needed");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // SDK happy-path probe on mount. Real RPC call against the configured
   // Monolythium v2 testnet endpoint; renders a degraded badge on failure.
   useEffect(() => {
+    if (onboarding !== "complete") return;
     let cancelled = false;
     const run = async () => {
       try {
@@ -59,7 +81,15 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [onboarding]);
+
+  if (onboarding === "checking") {
+    return <main className="mw-root" data-denom="public" />;
+  }
+
+  if (onboarding === "needed") {
+    return <Onboarding onDone={() => setOnboarding("complete")} />;
+  }
 
   const openOperation = (req: OperationRequest) => setOperation(req);
   const closeOperation = () => setOperation(null);
