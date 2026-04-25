@@ -23,6 +23,17 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+# tauri-plugin-deep-link works on every Tauri target (desktop + mobile).
+# On desktop it owns a single-instance handoff (Linux .desktop file / macOS
+# Info.plist `CFBundleURLTypes` / Windows registry); on iOS it taps
+# `Universal Links` + `Custom URL Schemes`; on Android it parses
+# `intent-filter` data attributes. Same `on_open_url` callback shape for all.
+tauri-plugin-deep-link = "2"
+# `tauri-plugin-store` persists WC v2 session state (topic, peer metadata,
+# accounts, expiry). Separate file from `vault.v1.json` — the WC store is
+# unencrypted (sessions are public on the relay anyway) and fully wipeable
+# from a "Disconnect all" affordance without disturbing the vault.
+tauri-plugin-store = "2"
 
 # Mobile-only plugins. iOS Keychain Services + Android Keystore via
 # tauri-plugin-keystore; Touch ID / Face ID / fingerprint via

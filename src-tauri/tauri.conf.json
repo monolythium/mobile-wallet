@@ -34,5 +34,16 @@
     "category": "Finance",
     "shortDescription": "Monolythium mobile wallet",
     "longDescription": "Monolythium mobile wallet (iOS + Android) built on Tauri 2 mobile. Hold and move MNLX from a phone, with platform keychain integration and biometric unlock."
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        { "host": "wallet.monolythium.io", "pathPrefix": ["/send", "/sign", "/wc"] }
+      ],
+      "desktop": {
+        "schemes": ["monolythium", "lyth"]
+      },
+      "schemes": ["monolythium", "lyth"]
+    }
   }
 }
