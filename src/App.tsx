@@ -38,6 +38,7 @@ import { QrScanner } from "./screens/QrScanner";
 import { Sessions } from "./screens/Sessions";
 import { fetchChainStatus, type ChainStatus } from "./sdk/client";
 import { hasUnlockSecret } from "./sdk/auth";
+import { vaultBoundAddress } from "./sdk/vault";
 import {
   subscribeDeepLinks,
   type DeepLinkAction,
@@ -74,6 +75,7 @@ export default function App() {
   const [status, setStatus] = useState<ChainStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [onboarding, setOnboarding] = useState<OnboardingState>("checking");
+  const [selfAddress, setSelfAddress] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   // Probe the platform keystore once on mount. If a secret is present the
@@ -103,6 +105,20 @@ export default function App() {
       }
     };
     void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [onboarding]);
+
+  // Resolve the vault-bound address. The envelope carries the public
+  // address as a plaintext header field so this round-trip never
+  // triggers a biometric prompt — only `selfAddress` shows up in the UI.
+  useEffect(() => {
+    if (onboarding !== "complete") return;
+    let cancelled = false;
+    void vaultBoundAddress().then((addr) => {
+      if (!cancelled) setSelfAddress(addr);
+    });
     return () => {
       cancelled = true;
     };
@@ -315,6 +331,7 @@ export default function App() {
         <Home
           status={status}
           statusError={statusError}
+          selfAddress={selfAddress}
           openOperation={openOperation}
           onScan={openScanner}
         />

@@ -45,6 +45,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { argon2idAsync } from "@noble/hashes/argon2.js";
+import { Wallet } from "ethers";
 
 /**
  * Argon2id KDF parameters. Bumping any of these is a vault re-encryption —
@@ -83,15 +84,33 @@ export interface VaultEnvelope {
   kekWrap: string; // base64
   payloadIv: string; // base64
   payload: string; // base64
+  /**
+   * The public EIP-55 lowercase address bound to this vault, surfaced
+   * in plaintext so the UI can render the bound identity without
+   * triggering a biometric prompt at app boot. The address is public
+   * information; the private key stays inside `payload`.
+   */
+  address: string;
 }
 
 /**
- * Decrypted vault payload. Stage 4 keeps the payload deliberately empty
- * (just a creation marker) — Stage 5 lands seed material + signing keys.
+ * Decrypted vault payload. The signing key sits inside the AES-GCM-sealed
+ * payload, never in the clear and never in the keystore — only an unlock
+ * flow that derives the right KEK can reveal it.
+ *
+ * For now we generate a fresh secp256k1 key at bootstrap (so the wallet
+ * has a usable testnet identity from first launch); a future Stage 5
+ * change will replace this with BIP-39 seed restoration without breaking
+ * the payload shape — `secp256k1Priv` will simply be derived from the
+ * mnemonic at unlock time.
  */
 export interface VaultPayload {
   version: 1;
   createdAt: number; // unix seconds
+  /** 32-byte secp256k1 private key, hex-encoded (no `0x` prefix). */
+  secp256k1Priv: string;
+  /** EIP-55 lowercase address derived from the private key. */
+  address: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -260,6 +279,21 @@ export async function vaultExists(): Promise<boolean> {
   return vaultExistsCmd();
 }
 
+/**
+ * Public address bound to the vault, read straight from the envelope's
+ * plaintext header. Returns `null` if the vault hasn't been bootstrapped.
+ * No biometric prompt, no decryption — the address is public info.
+ *
+ * Older vaults (bootstrapped before the `address` envelope field landed)
+ * report `null`; the UI surfaces a "wallet identity loading…" pane and
+ * the next biometric-gated op resolves the address via the unlock path.
+ */
+export async function vaultBoundAddress(): Promise<string | null> {
+  const env = await readEnvelope();
+  if (!env) return null;
+  return typeof env.address === "string" ? env.address : null;
+}
+
 async function readEnvelope(): Promise<VaultEnvelope | null> {
   const raw = await vaultReadCmd();
   if (raw === null) return null;
@@ -301,11 +335,24 @@ export async function bootstrap(password: string): Promise<BootstrapResult> {
   const kekWrapIv = randomBytes(12);
   const kekWrap = await aesGcmEncrypt(deviceKey, kekWrapIv, kek);
 
-  // Encrypt a fresh payload under the KEK. Stage 4 leaves payload minimal
-  // (creation marker only); Stage 5 will land seed material here.
+  // Generate a fresh secp256k1 key inside the payload. Ethers'
+  // `Wallet.createRandom` uses the platform CSPRNG; the key is then
+  // sealed under the KEK before any disk write so neither the on-disk
+  // envelope nor the keystore ever sees plaintext key material.
+  //
+  // A future Stage 5 change will swap key generation for BIP-39 seed
+  // restoration. The shape stays the same: every signing path inside the
+  // wallet derives `(secp256k1Priv, address)` from a payload field, so
+  // upstream callers don't move.
+  const wallet = Wallet.createRandom();
+  const secp256k1Priv = wallet.privateKey.startsWith("0x")
+    ? wallet.privateKey.slice(2)
+    : wallet.privateKey;
   const payload: VaultPayload = {
     version: 1,
     createdAt: Math.floor(Date.now() / 1000),
+    secp256k1Priv,
+    address: wallet.address.toLowerCase(),
   };
   const payloadIv = randomBytes(12);
   const payloadCt = await aesGcmEncrypt(
@@ -322,6 +369,7 @@ export async function bootstrap(password: string): Promise<BootstrapResult> {
     kekWrap: bytesToBase64(kekWrap),
     payloadIv: bytesToBase64(payloadIv),
     payload: bytesToBase64(payloadCt),
+    address: payload.address,
   };
 
   try {

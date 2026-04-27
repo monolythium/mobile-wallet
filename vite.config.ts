@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -17,5 +18,11 @@ export default defineConfig({
     target: "es2022",
     sourcemap: true,
     outDir: "dist",
+  },
+  test: {
+    // jsdom keeps DOM globals (`window`, `document`, Web Crypto) available
+    // for vault + signer tests that exercise SubtleCrypto / atob / btoa.
+    environment: "jsdom",
+    include: ["src/**/__tests__/**/*.test.ts", "src/**/*.test.ts"],
   },
 });
