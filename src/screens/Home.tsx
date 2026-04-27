@@ -5,16 +5,33 @@
 import { Icon } from "../components/Icon";
 import type { OperationRequest } from "../components/OperationsDrawer";
 import type { ChainStatus } from "../sdk/client";
+import { sendLyth } from "../sdk/send";
+import { makeBiometricSigner, unlockViaBiometric } from "../sdk/signer";
 
 interface Props {
   status: ChainStatus | null;
   statusError: string | null;
+  /** EIP-55 lowercase address bound to the unlocked vault. `null` until
+   *  the bound address has been resolved (the App resolves it once via
+   *  the password unlock at onboarding-complete time). */
+  selfAddress: string | null;
   openOperation: (req: OperationRequest) => void;
   /** Scan affordance: opens the full-screen QR scanner. The scanned
    *  payload routes through `parseDeepLink` and back into either a Send /
    *  Sign sheet or a WalletConnect pairing. */
   onScan: () => void;
 }
+
+/**
+ * Demo recipient + amount used by the Send button on Home. The drawer
+ * shows these in the diff and feeds them straight to `sendLyth`. When a
+ * real "compose tx" surface (recipient picker, amount field, gas chooser)
+ * lands these go away.
+ */
+const SEND_DEMO = {
+  to: "0x000000000000000000000000000000000000dead",
+  amountLyth: "0.001",
+};
 
 const DEMO_TOKENS = [
   { sym: "LYTH", name: "Monolythium", amount: 14_280.41, priceUsd: 8.42, chg24h: 2.4, primary: true },
@@ -31,8 +48,55 @@ const DEMO_TXS = [
 const fmt = (n: number, f = 2) =>
   n.toLocaleString(undefined, { minimumFractionDigits: f, maximumFractionDigits: f });
 
-export function Home({ status, statusError, openOperation, onScan }: Props) {
+export function Home({ status, statusError, selfAddress, openOperation, onScan }: Props) {
   const totalUsd = DEMO_TOKENS.reduce((a, t) => a + t.amount * t.priceUsd, 0);
+
+  // Send LYTH — biometric+vault path. The drawer's auth stage already
+  // ran (or is about to run) `authorizeOperation`; the `execute()`
+  // closure fires after the auth gate succeeds and re-unlocks the vault
+  // payload to read the secp256k1 key. The unlocked key never leaves
+  // `sendLyth`'s call frame.
+  const openSend = () => {
+    if (!selfAddress) {
+      // The bound address is resolved at app boot via the password
+      // path; if we haven't gotten it yet, fall back to a preview-only
+      // request so the user sees the UI instead of an error.
+      openOperation({
+        kind: "send",
+        title: "Send LYTH",
+        summary: "Wallet identity is still loading — try again in a moment.",
+        details: [{ k: "Status", v: "binding address…" }],
+        confirmLabel: "Retry",
+      });
+      return;
+    }
+    const chainLabel = status ? `chain ${status.chainId.toString()}` : "(querying)";
+    openOperation({
+      kind: "send",
+      title: `Send ${SEND_DEMO.amountLyth} LYTH`,
+      summary: `Send ${SEND_DEMO.amountLyth} LYTH to ${shortAddr(SEND_DEMO.to)} on ${chainLabel}. The chain confirms in roughly one second.`,
+      details: [
+        { k: "From", v: selfAddress, mono: true },
+        { k: "To", v: SEND_DEMO.to, mono: true },
+        { k: "Asset", v: "LYTH" },
+        { k: "Amount", v: SEND_DEMO.amountLyth, mono: true },
+        { k: "Network", v: chainLabel },
+      ],
+      confirmLabel: "Sign and send",
+      execute: async () => {
+        const signer = makeBiometricSigner({
+          unlock: unlockViaBiometric,
+          address: selfAddress,
+        });
+        const result = await sendLyth(signer, {
+          from: selfAddress,
+          to: SEND_DEMO.to,
+          amountLyth: SEND_DEMO.amountLyth,
+        });
+        return result.txHash;
+      },
+    });
+  };
 
   return (
     <div className="mw-scroll">
@@ -53,21 +117,7 @@ export function Home({ status, statusError, openOperation, onScan }: Props) {
         <div className="mw-actions">
           <button
             className="mw-act"
-            onClick={() =>
-              openOperation({
-                kind: "send",
-                title: "Send LYTH",
-                summary: "Send 100 LYTH to mono1:demo…42a8. The chain confirms in roughly one second.",
-                details: [
-                  { k: "Asset", v: "LYTH" },
-                  { k: "Amount", v: "100.00", mono: true },
-                  { k: "To", v: "mono1:demo…42a8", mono: true },
-                  { k: "Network fee", v: "0.008 LYTH", mono: true },
-                  { k: "Arrives", v: "in ~1 second" },
-                ],
-                confirmLabel: "Sign and send",
-              })
-            }
+            onClick={openSend}
           >
             <span className="ico">
               <Icon name="send" size={18} />
@@ -224,9 +274,14 @@ function ChainConnection({ status, error }: { status: ChainStatus | null; error:
   }
   return (
     <div className="mw-conn">
-      <span className="mw-halo">Chain {status.chainId}</span>
+      <span className="mw-halo">Chain {status.chainId.toString()}</span>
       <span>·</span>
-      <span>height {status.blockNumber.toLocaleString()}</span>
+      <span>height {Number(status.blockNumber).toLocaleString()}</span>
     </div>
   );
+}
+
+function shortAddr(s: string): string {
+  if (s.length <= 14) return s;
+  return `${s.slice(0, 8)}…${s.slice(-6)}`;
 }
