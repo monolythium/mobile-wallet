@@ -150,6 +150,25 @@ export default function App() {
         });
         break;
       }
+      case "stake": {
+        const cluster = action.cluster ?? (action.clusterId !== undefined ? `C-${String(action.clusterId).padStart(3, "0")}` : "selected cluster");
+        setOperation({
+          kind: "stake",
+          title: "Stake LYTH",
+          summary: `External staking request for ${cluster}.`,
+          details: [
+            { k: "Cluster", v: cluster, mono: true },
+            ...(action.clusterId !== undefined
+              ? [{ k: "Cluster ID", v: String(action.clusterId), mono: true }]
+              : []),
+            ...(action.chainId
+              ? [{ k: "Chain", v: String(action.chainId), mono: true }]
+              : []),
+          ],
+          confirmLabel: "Review stake",
+        });
+        break;
+      }
       case "sign-personal": {
         setOperation({
           kind: "sign",
