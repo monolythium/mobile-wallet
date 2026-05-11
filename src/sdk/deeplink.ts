@@ -10,6 +10,7 @@
 // Recognised inputs:
 //
 //   monolythium://send?to=0x..&value=..&token=0x..
+//   monolythium://stake?cluster=C-003&clusterId=3&chainId=69420
 //   monolythium://sign?type=personal&message=0x..
 //   monolythium://sign?type=typed&domain=..&message=..  (EIP-712, JSON-encoded)
 //   monolythium://wc?uri=wc:<topic>@2?relay-protocol=irn&symKey=..
@@ -60,6 +61,17 @@ export interface WalletConnectAction {
   raw: string;
 }
 
+export interface StakeAction {
+  kind: "stake";
+  /** Human cluster label, e.g. C-003. */
+  cluster?: string;
+  /** Numeric cluster id when provided by an explorer. */
+  clusterId?: number;
+  /** Optional EVM chain id, decimal. Absent = use the wallet's active chain. */
+  chainId?: number;
+  raw: string;
+}
+
 export interface UnknownAction {
   kind: "unknown";
   reason: string;
@@ -71,6 +83,7 @@ export type DeepLinkAction =
   | PersonalSignAction
   | TypedSignAction
   | WalletConnectAction
+  | StakeAction
   | UnknownAction;
 
 /**
@@ -142,6 +155,20 @@ function parseMonolythiumScheme(input: string, raw: string): DeepLinkAction {
         to,
         value: params.get("value") ?? undefined,
         token: params.get("token") ?? undefined,
+        chainId: optInt(params.get("chainId")),
+        raw,
+      };
+    }
+    case "stake": {
+      const cluster = params.get("cluster") ?? undefined;
+      const clusterId = optInt(params.get("clusterId"));
+      if (!cluster && clusterId === undefined) {
+        return { kind: "unknown", reason: "stake: missing cluster", raw };
+      }
+      return {
+        kind: "stake",
+        cluster,
+        clusterId,
         chainId: optInt(params.get("chainId")),
         raw,
       };
