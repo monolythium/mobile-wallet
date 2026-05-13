@@ -50,7 +50,7 @@ export function Ask({ openOperation }: Props) {
           openOperation({
             kind: "send",
             title: "Send LYTH",
-            summary: "Send 50 LYTH to Mira Bell on Monolythium v2 testnet.",
+            summary: "Send 50 LYTH to Mira Bell on Monolythium v4.0 testnet.",
             details: [
               { k: "Asset", v: "LYTH" },
               { k: "Amount", v: "50.00", mono: true },
@@ -67,7 +67,7 @@ export function Ask({ openOperation }: Props) {
     next.push({
       role: "wallet",
       text:
-        "I can read on-chain history once the SDK is wired against your validator endpoint. For now, the Tokens and Activity tabs hold the source of truth.",
+        "I can read on-chain history once the SDK is wired against your selected RPC endpoint. For now, the Tokens and Activity tabs hold the source of truth.",
     });
     setTurns(next);
     setDraft("");

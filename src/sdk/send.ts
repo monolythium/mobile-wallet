@@ -13,7 +13,7 @@
 //   4. broadcastTransaction via the provider; the SDK transport carries it.
 //
 // We deliberately do NOT swap to legacy txs even when the provider's
-// `feeData()` reports a zero `maxFeePerGas` — Monolythium v2 is
+// `feeData()` reports a zero `maxFeePerGas` — Monolythium v4.0 is
 // EIP-1559-only at the wire level. If the node doesn't surface fee data
 // (sandbox / fresh devnet), we surface that as an error instead of
 // falling back to a legacy tx the chain wouldn't accept.

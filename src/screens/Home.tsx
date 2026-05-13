@@ -133,7 +133,7 @@ export function Home({ status, statusError, selfAddress, openOperation, onScan }
                 summary: "Share your address or QR code with the sender.",
                 details: [
                   { k: "Address", v: "mono1:demo…42a8", mono: true },
-                  { k: "Network", v: "Monolythium v2 testnet" },
+                  { k: "Network", v: "Monolythium v4.0 testnet" },
                 ],
                 confirmLabel: "Show QR",
               })
