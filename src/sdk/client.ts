@@ -18,8 +18,7 @@ import type { MonolythiumProviderOptions } from "@monolythium/core-sdk";
  * Default RPC endpoint. Honors `VITE_MONO_RPC_URL` at build time so a
  * release bundle can pin to a specific endpoint without a code change.
  *
- * The fallback points at the live LythiumDAG-BFT testnet (chain id 69420
- * per Law §13.1).
+ * The fallback points at the live LythiumDAG-BFT testnet (chain id 69420).
  */
 function defaultEndpoint(): string {
   const fromEnv = import.meta.env.VITE_MONO_RPC_URL;
@@ -31,7 +30,7 @@ let _provider: MonolythiumProvider | null = null;
 
 /**
  * Lazily-constructed singleton ethers `MonolythiumProvider`. The shim
- * registers the `monolythium-v2-testnet` network with ethers' global
+ * registers the `monolythium-testnet` network with ethers' global
  * registry on first use; subsequent calls reuse the same instance and
  * the same underlying `RpcClient` transport.
  */
