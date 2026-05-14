@@ -8,7 +8,7 @@ Monolythium mobile wallet (iOS and Android via Tauri 2)
 
 ## What this is
 
-A native mobile wallet for Monolythium, built on Tauri 2's mobile targets with a Rust backend and a React 19 frontend. It is designed to share its core code with the desktop wallet and lean on each platform's secure storage (iOS Keychain Services, Android Keystore) and biometric prompts. Stage 0 ships only the cross-platform scaffold — the iOS and Android native projects are not yet initialized, and the full feature set lands incrementally.
+A native mobile wallet for Monolythium, built on Tauri 2's mobile targets with a Rust backend and a React 19 frontend. It is designed to share its core code with the desktop wallet and lean on each platform's secure storage (iOS Keychain Services, Android Keystore) and biometric prompts. The current cross-platform shell is live-first for chain status, balance reads, deep links, WalletConnect session scaffolding, and send/stake review flows through `@monolythium/core-sdk`.
 
 ## Who this is for
 
@@ -22,7 +22,7 @@ Until the first signed release ships, run from source (see "Building from source
 
 ## Getting started
 
-The wallet currently boots a placeholder screen. Once a release lands, install it, open it, and follow the in-app onboarding to create or import a wallet.
+For local testing, run the Vite or Tauri mobile target and point `VITE_MONO_RPC_URL` at the testnet RPC you want to use. If unset, the wallet uses the SDK-bundled testnet endpoint from the chain registry.
 
 ## Documentation
 
