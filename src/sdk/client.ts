@@ -11,19 +11,21 @@
 // `mono-core-sdk` is the single seam — screens never construct an
 // `RpcClient` directly (per workspace CLAUDE §6).
 
-import { MonolythiumProvider, SdkError } from "@monolythium/core-sdk";
+import { MonolythiumProvider, SdkError, getRpcEndpoints } from "@monolythium/core-sdk";
 import type { MonolythiumProviderOptions } from "@monolythium/core-sdk";
 
 /**
  * Default RPC endpoint. Honors `VITE_MONO_RPC_URL` at build time so a
  * release bundle can pin to a specific endpoint without a code change.
  *
- * The fallback points at the live LythiumDAG-BFT testnet (chain id 69420).
+ * The fallback points at the SDK-bundled chain-registry testnet endpoint
+ * (chain id 69420), not a stale DNS alias.
  */
 function defaultEndpoint(): string {
   const fromEnv = import.meta.env.VITE_MONO_RPC_URL;
   if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
-  return "https://testnet-rpc.monolythium.io";
+  if (import.meta.env.DEV) return "/rpc";
+  return getRpcEndpoints("testnet-69420")[0]?.url ?? "http://localhost:8548";
 }
 
 let _provider: MonolythiumProvider | null = null;
