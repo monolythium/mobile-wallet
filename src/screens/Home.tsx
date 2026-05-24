@@ -5,12 +5,14 @@
 import { Icon } from "../components/Icon";
 import type { OperationRequest } from "../components/OperationsDrawer";
 import type { ChainStatus } from "../sdk/client";
+import type { WalletReadiness } from "../sdk/readiness";
 import { sendLyth } from "../sdk/send";
 import { makeBiometricSigner, unlockViaBiometric } from "../sdk/signer";
 
 interface Props {
   status: ChainStatus | null;
   statusError: string | null;
+  readiness: WalletReadiness | null;
   /** EIP-55 lowercase address bound to the unlocked vault. `null` until
    *  the bound address has been resolved (the App resolves it once via
    *  the password unlock at onboarding-complete time). */
@@ -25,7 +27,7 @@ interface Props {
 /**
  * Demo recipient + amount used by the Send button on Home. The drawer
  * shows these in the diff and feeds them straight to `sendLyth`. When a
- * real "compose tx" surface (recipient picker, amount field, gas chooser)
+ * real "compose tx" surface (recipient picker, amount field, fee chooser)
  * lands these go away.
  */
 const SEND_DEMO = {
@@ -39,16 +41,10 @@ const DEMO_TOKENS = [
   { sym: "ETH", name: "Ether (bridge)", amount: 0.84, priceUsd: 2_950.0, chg24h: -0.6, primary: false },
 ] as const;
 
-const DEMO_TXS = [
-  { id: "tx1", who: "Mira Bell", when: "2 min ago", amount: 240, dir: "in" as const },
-  { id: "tx2", who: "Cypher Co.", when: "1 hr ago", amount: 75, dir: "out" as const },
-  { id: "tx3", who: "Cluster Avengers", when: "today", amount: 12.4, dir: "in" as const },
-];
-
 const fmt = (n: number, f = 2) =>
   n.toLocaleString(undefined, { minimumFractionDigits: f, maximumFractionDigits: f });
 
-export function Home({ status, statusError, selfAddress, openOperation, onScan }: Props) {
+export function Home({ status, statusError, readiness, selfAddress, openOperation, onScan }: Props) {
   const totalUsd = DEMO_TOKENS.reduce((a, t) => a + t.amount * t.priceUsd, 0);
 
   // Send LYTH — biometric+vault path. The drawer's auth stage already
@@ -229,25 +225,33 @@ export function Home({ status, statusError, selfAddress, openOperation, onScan }
 
       <div className="mw-card">
         <div className="mw-card__head">
-          <h3>Recent activity</h3>
+          <h3>v4.1 readiness</h3>
           <div className="spacer" />
+          <span className={`mw-readiness__state ${readiness?.state ?? "blocked"}`}>
+            {readiness === null ? "checking" : readiness.state}
+          </span>
         </div>
-        {DEMO_TXS.map((tx) => (
-          <div key={tx.id} className="mw-tx">
-            <div className={`mw-tx__dir ${tx.dir}`}>
-              <Icon name={tx.dir === "in" ? "receive" : "send"} size={14} />
+        {readiness === null ? (
+          <div className="mw-readiness__empty">Checking native wallet posture…</div>
+        ) : (
+          <>
+            {readiness.items.map((item) => (
+              <div key={item.key} className="mw-readiness">
+                <div className={`mw-readiness__dot ${item.state}`} />
+                <div className="mw-readiness__body">
+                  <div className="mw-readiness__label">{item.label}</div>
+                  <div className="mw-readiness__detail">{item.detail}</div>
+                </div>
+                <div className="mw-readiness__value">{item.value}</div>
+              </div>
+            ))}
+            <div className="mw-readiness__foot">
+              {readiness.sampledAtBlock === null
+                ? readiness.error ?? "Native capability data unavailable."
+                : `Capabilities sampled at height ${readiness.sampledAtBlock.toLocaleString()}.`}
             </div>
-            <div style={{ minWidth: 0 }}>
-              <div className="mw-tx__label">{tx.who}</div>
-              <div className="mw-tx__when">{tx.when}</div>
-            </div>
-            <div className={`mw-tx__amt ${tx.dir}`}>
-              {tx.dir === "in" ? "+" : "−"}
-              {fmt(tx.amount)}
-              <span style={{ color: "var(--fg-400)", marginLeft: 4, fontSize: 10.5 }}>LYTH</span>
-            </div>
-          </div>
-        ))}
+          </>
+        )}
       </div>
 
       <ChainConnection status={status} error={statusError} />
