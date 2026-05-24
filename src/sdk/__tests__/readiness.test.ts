@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MONOLYTHIUM_TESTNET_CHAIN_ID } from "@monolythium/core-sdk";
 import { bytesToHex, hexToBytes, MlDsa65Backend } from "@monolythium/core-sdk/crypto";
 import {
@@ -12,6 +12,27 @@ import {
   noEvmFinalityTrustConfigFromEnv,
 } from "../readiness";
 import type { ChainStatus } from "../client";
+
+const sdkRegistryMock = vi.hoisted(() => ({
+  policy: null as unknown,
+}));
+
+vi.mock("@monolythium/core-sdk", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    getNoEvmReceiptTrustPolicy: vi.fn(() => sdkRegistryMock.policy),
+  };
+});
+
+const TRUST_ENV_KEYS = [
+  "VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS",
+  "VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD",
+  "VITE_MONO_BLS_FINALITY_CHAIN_ID",
+  "VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY",
+  "VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE",
+  "VITE_MONO_BLS_FINALITY_THRESHOLD",
+] as const;
 
 const STATUS: ChainStatus = {
   chainId: MONOLYTHIUM_TESTNET_CHAIN_ID,
@@ -97,6 +118,33 @@ function signedArchiveProof(seed: number) {
   };
 }
 
+function registryPolicyForProof(
+  signedArchive: ReturnType<typeof signedArchiveProof>,
+) {
+  return {
+    chainId: MONOLYTHIUM_TESTNET_CHAIN_ID,
+    archive: {
+      trustedSigners: [
+        {
+          publicKey: signedArchive.signer.publicKey(),
+        },
+      ],
+      threshold: 1,
+    },
+    finality: {
+      mode: "cluster",
+      chainId: VERIFIED_FINALITY_TRUST.chainId,
+      clusterPublicKey: hexToBytes(VERIFIED_FINALITY_TRUST.clusterPublicKey),
+      committeeSize: VERIFIED_FINALITY_TRUST.committeeSize,
+      threshold: VERIFIED_FINALITY_TRUST.threshold,
+    },
+  };
+}
+
+function mismatchedRegistryPolicy() {
+  return registryPolicyForProof(signedArchiveProof(99));
+}
+
 const CAPABILITIES = {
   blockNumber: 123n,
   capabilities: {},
@@ -115,6 +163,16 @@ const CAPABILITIES = {
 };
 
 describe("wallet readiness", () => {
+  beforeEach(() => {
+    sdkRegistryMock.policy = null;
+    for (const key of TRUST_ENV_KEYS) vi.stubEnv(key, "");
+  });
+
+  afterEach(() => {
+    sdkRegistryMock.policy = null;
+    vi.unstubAllEnvs();
+  });
+
   it("marks v4.1 readiness when network, native fee display, receipt proof, and MRV forwarders align", () => {
     const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null);
 
@@ -279,6 +337,139 @@ describe("wallet readiness", () => {
       VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS: bytesToHex(signer.publicKey()),
       VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD: "2",
     })).toMatchObject({ state: "blocked" });
+  });
+
+  it("uses the bundled registry receipt trust policy when env and trust options are absent", () => {
+    const signed = signedArchiveProof(18);
+    sdkRegistryMock.policy = registryPolicyForProof(signed);
+
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: signed.proof,
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+    });
+
+    expect(readiness.state).toBe("ready");
+    expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
+      state: "ready",
+      value: "compact + BLS/archive verified",
+      detail: expect.stringContaining("wallet-verified BLS threshold 1/1"),
+    });
+    expect(readiness.items.find((item) => item.key === "receipt-proof")?.detail)
+      .toContain("wallet-verified ML-DSA archive threshold 1/1");
+  });
+
+  it("preserves unconfigured receipt proof readiness when the bundled registry has no policy", () => {
+    const signed = signedArchiveProof(19);
+    sdkRegistryMock.policy = null;
+
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: signed.proof,
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+    });
+
+    expect(readiness.state).toBe("ready");
+    expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
+      state: "ready",
+      value: "compact + archive digest",
+      detail: expect.stringContaining("not wallet-verified"),
+    });
+  });
+
+  it("fails closed when the bundled registry finality policy is multisig", () => {
+    const signed = signedArchiveProof(21);
+    sdkRegistryMock.policy = {
+      ...registryPolicyForProof(signed),
+      finality: {
+        mode: "multisig",
+        chainId: VERIFIED_FINALITY_TRUST.chainId,
+        trustedSigners: [],
+        threshold: 1,
+      },
+    };
+
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: signed.proof,
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+    });
+
+    expect(readiness.state).toBe("blocked");
+    expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
+      state: "blocked",
+      value: "not verified",
+      detail: expect.stringContaining("multisig mode"),
+    });
+  });
+
+  it("fails closed for bounded bundled registry policies that cannot be satisfied", () => {
+    const signed = signedArchiveProof(22);
+    sdkRegistryMock.policy = {
+      ...registryPolicyForProof(signed),
+      finality: {
+        ...registryPolicyForProof(signed).finality,
+        validToRound: 57,
+      },
+    };
+
+    const finalityExpired = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: signed.proof,
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+    });
+
+    expect(finalityExpired.state).toBe("blocked");
+    expect(finalityExpired.items.find((item) => item.key === "receipt-proof")?.detail)
+      .toContain("registry BLS finality policy is not valid at round 58");
+
+    sdkRegistryMock.policy = {
+      ...registryPolicyForProof(signed),
+      archive: {
+        ...registryPolicyForProof(signed).archive,
+        validFromHeight: 100,
+      },
+    };
+
+    const archiveBounded = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: signed.proof,
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+    });
+
+    expect(archiveBounded.state).toBe("blocked");
+    expect(archiveBounded.items.find((item) => item.key === "receipt-proof")?.detail)
+      .toContain("mobile readiness has no receipt block-height context");
+  });
+
+  it("lets explicit trust options and env config override bundled registry trust", () => {
+    const signed = signedArchiveProof(20);
+    sdkRegistryMock.policy = mismatchedRegistryPolicy();
+
+    const explicit = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: signed.proof,
+      archiveTrust: signed.trust,
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+      finalityTrust: VERIFIED_FINALITY_TRUST,
+    });
+
+    expect(explicit.state).toBe("ready");
+    expect(explicit.items.find((item) => item.key === "receipt-proof")?.value)
+      .toBe("compact + BLS/archive verified");
+
+    vi.stubEnv("VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS", bytesToHex(signed.signer.publicKey()));
+    vi.stubEnv("VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD", "1");
+    vi.stubEnv("VITE_MONO_BLS_FINALITY_CHAIN_ID", VERIFIED_FINALITY_TRUST.chainId.toString());
+    vi.stubEnv("VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY", VERIFIED_FINALITY_TRUST.clusterPublicKey);
+    vi.stubEnv(
+      "VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE",
+      VERIFIED_FINALITY_TRUST.committeeSize.toString(),
+    );
+    vi.stubEnv("VITE_MONO_BLS_FINALITY_THRESHOLD", VERIFIED_FINALITY_TRUST.threshold.toString());
+
+    const fromEnv = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: signed.proof,
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+    });
+
+    expect(fromEnv.state).toBe("ready");
+    expect(fromEnv.items.find((item) => item.key === "receipt-proof")?.value)
+      .toBe("compact + BLS/archive verified");
   });
 
   it("wallet-verifies exact-height archive signatures when trusted signer config is supplied", () => {

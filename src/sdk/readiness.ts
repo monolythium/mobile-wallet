@@ -1,3 +1,4 @@
+import * as monolythiumCoreSdk from "@monolythium/core-sdk";
 import {
   ML_DSA_65_PUBLIC_KEY_LEN,
   MONOLYTHIUM_TESTNET_CHAIN_ID,
@@ -57,6 +58,8 @@ const NO_EVM_FINALITY_EVIDENCE_SOURCE = "blsRoundCertificate";
 const NO_EVM_RECEIPT_CODEC = "bincode(protocore_evm::Receipt)";
 const NO_EVM_RECEIPT_ROOT_DOMAIN = "monolythium/v4.1/receipts_root_empty/1";
 const MIN_NATIVE_FEE_LYTHOSHI = LYTHOSHI_PER_LYTH / 10_000n;
+// The registry helper is keyed by the chain-registry slug, not the ethers network name.
+const NO_EVM_RECEIPT_TRUST_REGISTRY_NETWORK = "testnet-69420";
 
 export interface NoEvmArchiveProofMaterial {
   schema: unknown;
@@ -121,6 +124,47 @@ export interface NoEvmArchiveTrustConfig {
   threshold: number | string;
 }
 
+interface RegistryNoEvmArchiveTrustedSigner {
+  publicKey: string | Uint8Array | readonly number[];
+  signerId?: string;
+  validFromHeight?: number | bigint;
+  validToHeight?: number | bigint;
+}
+
+interface RegistryNoEvmReceiptTrustPolicy {
+  chainId?: number | bigint;
+  archive?: {
+    trustedSigners: readonly RegistryNoEvmArchiveTrustedSigner[];
+    threshold: number;
+    validFromHeight?: number | bigint;
+    validToHeight?: number | bigint;
+  };
+  finality?:
+    | {
+      mode: "cluster";
+      chainId?: number | bigint;
+      clusterPublicKey: string | Uint8Array | readonly number[];
+      committeeSize: number;
+      threshold: number;
+      validFromRound?: number | bigint;
+      validToRound?: number | bigint;
+    }
+    | {
+      mode: "multisig";
+      chainId?: number | bigint;
+      trustedSigners: readonly unknown[];
+      threshold: number;
+      validFromRound?: number | bigint;
+      validToRound?: number | bigint;
+    };
+}
+
+interface RegistryNoEvmReceiptTrustLookup {
+  getNoEvmReceiptTrustPolicy?: (
+    network: string,
+  ) => RegistryNoEvmReceiptTrustPolicy | null;
+}
+
 export type NoEvmFinalityTrustConfigResolution =
   | { state: "unconfigured"; detail: string }
   | {
@@ -130,6 +174,8 @@ export type NoEvmFinalityTrustConfigResolution =
       clusterPublicKey: Uint8Array;
       committeeSize: number;
       threshold: number;
+      validFromRound?: bigint;
+      validToRound?: bigint;
     };
   }
   | { state: "blocked"; detail: string };
@@ -194,6 +240,7 @@ export async function loadWalletReadiness(
 }
 
 export function buildOfflineWalletReadiness(message: string): WalletReadiness {
+  const readinessOptions = withDefaultTrustConfig({});
   return {
     state: "blocked",
     sampledAtBlock: null,
@@ -201,7 +248,7 @@ export function buildOfflineWalletReadiness(message: string): WalletReadiness {
     items: [
       networkItem(null),
       nativeFeeItem(),
-      receiptProofItem({}),
+      receiptProofItem(readinessOptions),
       mrvItem(null),
     ],
   };
@@ -213,10 +260,11 @@ export function buildWalletReadiness(
   error: string | null,
   options: WalletReadinessOptions = {},
 ): WalletReadiness {
+  const readinessOptions = withDefaultTrustConfig(options);
   const items = [
     networkItem(status.chainId),
     nativeFeeItem(),
-    receiptProofItem(options),
+    receiptProofItem(readinessOptions),
     mrvItem(capabilities),
   ];
   const state = error === null && items.every((item) => item.state === "ready")
@@ -291,6 +339,152 @@ export function noEvmArchiveTrustConfigFromEnv(
     trustedPublicKeys: values[0]!,
     threshold: values[1]!,
   });
+}
+
+function noEvmArchiveTrustConfigFromRegistry(
+  policy: RegistryNoEvmReceiptTrustPolicy | null = bundledNoEvmReceiptTrustPolicy(),
+): NoEvmArchiveTrustConfigResolution {
+  const archive = policy?.archive;
+  if (archive == null) {
+    return {
+      state: "unconfigured",
+      detail: "registry archive signer policy absent",
+    };
+  }
+  const threshold = parsePositiveSafeInteger(archive.threshold, "registry archive threshold");
+  if (threshold.state === "blocked") return threshold;
+  const archiveValidFrom = parseOptionalRegistryBound(
+    archive.validFromHeight,
+    "registry archive validFromHeight",
+  );
+  if (archiveValidFrom.state === "blocked") return archiveValidFrom;
+  const archiveValidTo = parseOptionalRegistryBound(
+    archive.validToHeight,
+    "registry archive validToHeight",
+  );
+  if (archiveValidTo.state === "blocked") return archiveValidTo;
+  if (archiveValidFrom.value !== undefined || archiveValidTo.value !== undefined) {
+    return {
+      state: "blocked",
+      detail:
+        "registry archive signer policy has height bounds, but mobile readiness " +
+        "has no receipt block-height context",
+    };
+  }
+  if (archive.trustedSigners.length === 0) {
+    return {
+      state: "blocked",
+      detail: "registry archive signer policy must include at least one signer",
+    };
+  }
+  if (threshold.value > archive.trustedSigners.length) {
+    return {
+      state: "blocked",
+      detail:
+        `registry archive threshold ${threshold.value.toString()} exceeds signer count ` +
+        archive.trustedSigners.length.toString(),
+    };
+  }
+
+  const trustedSigners: NoEvmArchiveTrustedSigner[] = [];
+  for (const [index, signer] of archive.trustedSigners.entries()) {
+    const publicKey = parseArchivePublicKey(
+      signer.publicKey,
+      `registry archive trustedSigners[${index.toString()}].publicKey`,
+    );
+    if (publicKey.state === "blocked") return publicKey;
+    const signerValidFrom = parseOptionalRegistryBound(
+      signer.validFromHeight,
+      `registry archive trustedSigners[${index.toString()}].validFromHeight`,
+    );
+    if (signerValidFrom.state === "blocked") return signerValidFrom;
+    const signerValidTo = parseOptionalRegistryBound(
+      signer.validToHeight,
+      `registry archive trustedSigners[${index.toString()}].validToHeight`,
+    );
+    if (signerValidTo.state === "blocked") return signerValidTo;
+    if (signerValidFrom.value !== undefined || signerValidTo.value !== undefined) {
+      return {
+        state: "blocked",
+        detail:
+          `registry archive trustedSigners[${index.toString()}] has height bounds, ` +
+          "but mobile readiness has no receipt block-height context",
+      };
+    }
+    trustedSigners.push({
+      ...signer,
+      publicKey: publicKey.value,
+    });
+  }
+
+  return {
+    state: "configured",
+    config: {
+      trustedSigners,
+      threshold: threshold.value,
+    },
+  };
+}
+
+function noEvmFinalityTrustConfigFromRegistry(
+  policy: RegistryNoEvmReceiptTrustPolicy | null = bundledNoEvmReceiptTrustPolicy(),
+): NoEvmFinalityTrustConfigResolution {
+  const finality = policy?.finality;
+  if (finality == null) {
+    return {
+      state: "unconfigured",
+      detail: "registry BLS finality policy absent",
+    };
+  }
+  if (finality.mode === "multisig") {
+    return {
+      state: "blocked",
+      detail:
+        "registry BLS finality policy uses multisig mode, but mobile wallet readiness " +
+        "only supports cluster finality",
+    };
+  }
+  const chainId = finality.chainId ?? policy?.chainId;
+  if (chainId == null) {
+    return {
+      state: "blocked",
+      detail: "registry BLS finality policy is missing chainId",
+    };
+  }
+  const resolved = resolveNoEvmFinalityTrustConfig({
+    chainId,
+    clusterPublicKey: finality.clusterPublicKey,
+    committeeSize: finality.committeeSize,
+    threshold: finality.threshold,
+  });
+  if (resolved.state !== "configured") return resolved;
+  const validFromRound = parseOptionalRegistryBound(
+    finality.validFromRound,
+    "registry BLS finality validFromRound",
+  );
+  if (validFromRound.state === "blocked") return validFromRound;
+  const validToRound = parseOptionalRegistryBound(
+    finality.validToRound,
+    "registry BLS finality validToRound",
+  );
+  if (validToRound.state === "blocked") return validToRound;
+  if (
+    validFromRound.value !== undefined &&
+    validToRound.value !== undefined &&
+    validFromRound.value > validToRound.value
+  ) {
+    return {
+      state: "blocked",
+      detail: "registry BLS finality validFromRound exceeds validToRound",
+    };
+  }
+  if (validFromRound.value !== undefined) {
+    resolved.config.validFromRound = validFromRound.value;
+  }
+  if (validToRound.value !== undefined) {
+    resolved.config.validToRound = validToRound.value;
+  }
+  return resolved;
 }
 
 export function resolveNoEvmFinalityTrustConfig(
@@ -625,6 +819,16 @@ function assessNoEvmFinalityEvidence(
       detail: `${parsed}; wallet verification blocked: ${trust.detail}`,
     };
   }
+  if (
+    (trust.config.validFromRound !== undefined && BigInt(round) < trust.config.validFromRound) ||
+    (trust.config.validToRound !== undefined && BigInt(round) > trust.config.validToRound)
+  ) {
+    return {
+      accepted: false,
+      walletVerified: false,
+      detail: `${parsed}; wallet verification blocked: registry BLS finality policy is not valid at round ${round.toString()}`,
+    };
+  }
 
   let verification: NoEvmBlsFinalityVerification;
   try {
@@ -741,12 +945,48 @@ function isSupportedBlsRoundCertificateFinalityEvidence(
 function withDefaultTrustConfig(
   options: WalletReadinessOptions,
 ): WalletReadinessOptions {
+  let registryTrustLoaded = false;
+  let registryTrust: RegistryNoEvmReceiptTrustPolicy | null = null;
+  const registryTrustPolicy = () => {
+    if (!registryTrustLoaded) {
+      registryTrust = bundledNoEvmReceiptTrustPolicy();
+      registryTrustLoaded = true;
+    }
+    return registryTrust;
+  };
+
   const withFinalityTrust = "finalityTrust" in options
     ? options
-    : { ...options, finalityTrust: noEvmFinalityTrustConfigFromEnv() };
+    : {
+      ...options,
+      finalityTrust: envTrustOrRegistryTrust(
+        noEvmFinalityTrustConfigFromEnv(),
+        () => noEvmFinalityTrustConfigFromRegistry(registryTrustPolicy()),
+      ),
+    };
   return "archiveTrust" in withFinalityTrust
     ? withFinalityTrust
-    : { ...withFinalityTrust, archiveTrust: noEvmArchiveTrustConfigFromEnv() };
+    : {
+      ...withFinalityTrust,
+      archiveTrust: envTrustOrRegistryTrust(
+        noEvmArchiveTrustConfigFromEnv(),
+        () => noEvmArchiveTrustConfigFromRegistry(registryTrustPolicy()),
+      ),
+    };
+}
+
+function envTrustOrRegistryTrust<T extends { state: "unconfigured" | "configured" | "blocked" }>(
+  envTrust: T,
+  registryTrust: () => T,
+): T {
+  if (envTrust.state !== "unconfigured") return envTrust;
+  const fallback = registryTrust();
+  return fallback.state === "unconfigured" ? envTrust : fallback;
+}
+
+function bundledNoEvmReceiptTrustPolicy(): RegistryNoEvmReceiptTrustPolicy | null {
+  const sdk = monolythiumCoreSdk as typeof monolythiumCoreSdk & RegistryNoEvmReceiptTrustLookup;
+  return sdk.getNoEvmReceiptTrustPolicy?.(NO_EVM_RECEIPT_TRUST_REGISTRY_NETWORK) ?? null;
 }
 
 function isFinalityTrustConfigResolution(
@@ -802,6 +1042,16 @@ function parsePositiveSafeInteger(
     return { state: "blocked", detail: `${field} must be in 1..=65535` };
   }
   return { state: "ok", value: Number(parsed.value) };
+}
+
+function parseOptionalRegistryBound(
+  value: unknown,
+  field: string,
+): { state: "ok"; value: bigint | undefined } | { state: "blocked"; detail: string } {
+  if (value === undefined) return { state: "ok", value: undefined };
+  const parsed = parseTrustedChainId(value, field);
+  if (parsed.state === "blocked") return parsed;
+  return { state: "ok", value: parsed.value };
 }
 
 function parseIntegerLike(
