@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MONOLYTHIUM_TESTNET_CHAIN_ID } from "@monolythium/core-sdk";
+import { bytesToHex, hexToBytes, MlDsa65Backend } from "@monolythium/core-sdk/crypto";
 import {
   acceptsNoEvmFinalityEvidence,
   acceptsNoEvmCompactReceiptProofSource,
@@ -7,6 +8,7 @@ import {
   buildWalletReadiness,
   describeNoEvmFinalityEvidence,
   describeNoEvmArchiveMaterial,
+  noEvmArchiveTrustConfigFromEnv,
   noEvmFinalityTrustConfigFromEnv,
 } from "../readiness";
 import type { ChainStatus } from "../client";
@@ -73,6 +75,27 @@ const VERIFIED_FINALITY_TRUST = {
   committeeSize: 7,
   threshold: 1,
 };
+
+function signedArchiveProof(seed: number) {
+  const signer = MlDsa65Backend.fromSeed(new Uint8Array(32).fill(seed));
+  const signatureDigest = `0x${"66".repeat(32)}`;
+  const signature =
+    `mono.snapshot.sig.v1:${signer.getAddress()}:` +
+    bytesToHex(signer.sign(hexToBytes(signatureDigest)));
+  return {
+    signer,
+    signatureDigest,
+    proof: {
+      ...ARCHIVE_PROOF,
+      signatureDigest,
+      signatures: [signature],
+    },
+    trust: {
+      trustedPublicKeys: [signer.publicKey()],
+      threshold: 1,
+    },
+  };
+}
 
 const CAPABILITIES = {
   blockNumber: 123n,
@@ -187,7 +210,7 @@ describe("wallet readiness", () => {
       "1 covering snapshot signature record parsed",
     );
     expect(describeNoEvmArchiveMaterial(proof)).toContain(
-      "not cryptographically verified",
+      "not wallet-verified (trusted archive signer config absent)",
     );
   });
 
@@ -220,12 +243,131 @@ describe("wallet readiness", () => {
     expect(describeNoEvmArchiveMaterial(ARCHIVE_PROOF)).toBe(
       "archive binding mono.no_evm_receipt_archive_binding.v1; " +
         "content digest indexerReceiptArchiveContentDigest; " +
-        "signature records absent; not cryptographically verified; not validator finality",
+        "signature records absent; archive proof parsed; " +
+        "not wallet-verified (trusted archive signer config absent); not validator finality",
     );
     expect(describeNoEvmArchiveMaterial({
       ...ARCHIVE_PROOF,
       signatures: [VALID_ARCHIVE_SIGNATURE, VALID_ARCHIVE_SIGNATURE],
-    })).toContain("2 archive signature records parsed");
+    })).toContain("2 exact-height archive signature records parsed");
+  });
+
+  it("parses trusted archive signer config from env", () => {
+    const { signer } = signedArchiveProof(13);
+    const configured = noEvmArchiveTrustConfigFromEnv({
+      VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS: bytesToHex(signer.publicKey()),
+      VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD: "1",
+    });
+
+    expect(noEvmArchiveTrustConfigFromEnv({})).toMatchObject({
+      state: "unconfigured",
+    });
+    expect(configured).toMatchObject({
+      state: "configured",
+      config: {
+        threshold: 1,
+      },
+    });
+    expect(noEvmArchiveTrustConfigFromEnv({
+      VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS: bytesToHex(signer.publicKey()),
+    })).toMatchObject({ state: "blocked" });
+    expect(noEvmArchiveTrustConfigFromEnv({
+      VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS: "0x12",
+      VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD: "1",
+    })).toMatchObject({ state: "blocked" });
+    expect(noEvmArchiveTrustConfigFromEnv({
+      VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS: bytesToHex(signer.publicKey()),
+      VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD: "2",
+    })).toMatchObject({ state: "blocked" });
+  });
+
+  it("wallet-verifies exact-height archive signatures when trusted signer config is supplied", () => {
+    const { proof, trust } = signedArchiveProof(14);
+
+    expect(acceptsNoEvmCompactReceiptProofSource(
+      "indexerReceiptArchive",
+      proof,
+      null,
+      null,
+      trust,
+    )).toBe(true);
+    expect(describeNoEvmArchiveMaterial(proof, trust)).toContain(
+      "wallet-verified ML-DSA archive threshold 1/1 via exact-height archive signatures",
+    );
+
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      archiveProof: proof,
+      archiveTrust: trust,
+      finalityEvidence: null,
+    });
+
+    expect(readiness.state).toBe("ready");
+    expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
+      state: "ready",
+      value: "compact + archive signatures verified",
+      detail: expect.stringContaining("wallet-verified ML-DSA archive threshold 1/1"),
+    });
+  });
+
+  it("uses covering snapshot archive signatures when exact-height signatures are absent", () => {
+    const { signer, trust } = signedArchiveProof(15);
+    const signature =
+      `mono.snapshot.sig.v1:${signer.getAddress()}:` +
+      bytesToHex(signer.sign(hexToBytes(COVERING_SNAPSHOT.signatureDigest)));
+    const proof = {
+      ...ARCHIVE_PROOF,
+      signatureDigest: null,
+      signatures: [],
+      coveringSnapshot: {
+        ...COVERING_SNAPSHOT,
+        signatures: [signature],
+      },
+    };
+
+    expect(acceptsNoEvmCompactReceiptProofSource(
+      "indexerReceiptArchive",
+      proof,
+      null,
+      null,
+      trust,
+    )).toBe(true);
+    expect(describeNoEvmArchiveMaterial(proof, trust)).toContain(
+      "wallet-verified ML-DSA archive threshold 1/1 via covering snapshot signatures",
+    );
+  });
+
+  it("fails closed for archive signer mismatches or invalid archive trust config", () => {
+    const trusted = signedArchiveProof(16);
+    const untrusted = signedArchiveProof(17);
+    const mismatchedProof = {
+      ...ARCHIVE_PROOF,
+      signatureDigest: untrusted.signatureDigest,
+      signatures: untrusted.proof.signatures,
+    };
+    const invalidTrust = noEvmArchiveTrustConfigFromEnv({
+      VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS: bytesToHex(trusted.signer.publicKey()),
+    });
+
+    expect(acceptsNoEvmCompactReceiptProofSource(
+      "indexerReceiptArchive",
+      mismatchedProof,
+      null,
+      null,
+      trusted.trust,
+    )).toBe(false);
+    expect(describeNoEvmArchiveMaterial(mismatchedProof, trusted.trust)).toContain(
+      "wallet verification mismatch: untrusted signer, threshold 0/1 not met",
+    );
+    expect(acceptsNoEvmCompactReceiptProofSource(
+      "indexerReceiptArchive",
+      trusted.proof,
+      null,
+      null,
+      invalidTrust,
+    )).toBe(false);
+    expect(describeNoEvmArchiveMaterial(trusted.proof, invalidTrust)).toContain(
+      "wallet verification blocked: incomplete archive signer trust config",
+    );
   });
 
   it("accepts nullable or BLS round certificate finality evidence without fabricating wallet verification", () => {
