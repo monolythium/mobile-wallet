@@ -7,6 +7,7 @@ import {
   buildWalletReadiness,
   describeNoEvmFinalityEvidence,
   describeNoEvmArchiveMaterial,
+  noEvmFinalityTrustConfigFromEnv,
 } from "../readiness";
 import type { ChainStatus } from "../client";
 
@@ -41,26 +42,47 @@ const FINALITY_EVIDENCE = {
   },
 };
 
+const VERIFIED_FINALITY_EVIDENCE = {
+  schema: "mono.no_evm_receipt_finality.v1",
+  source: "blsRoundCertificate",
+  round: 58,
+  certificate: {
+    round: 58,
+    signature:
+      "0xb52a7567f736afbda5e09d5af4bd8da36cff89c3e8d09ca4c98f8bffe5fbdca7af2437f1fbf92e4f52df8a54ed1c2de71954d1134637a675734db73acb4c0c545f4b3cd39577b4985e8a26b767a68d825c48f0a90e606d8ccbbd8885ef27fcd7",
+    signersBitmap: "0x08",
+    signerIndices: [3],
+    signerCount: 1,
+  },
+};
+
+const VERIFIED_FINALITY_TRUST = {
+  chainId: 69_420,
+  clusterPublicKey: "0xb77f27a88bfe18988cfcf68ba7462d188a0e655bdd68318c706a3b51887a61fa7d7a9c8843e26f91c91446819925db97",
+  committeeSize: 7,
+  threshold: 1,
+};
+
+const CAPABILITIES = {
+  blockNumber: 123n,
+  capabilities: {},
+  nativeModuleForwarders: {
+    market: [
+      {
+        module: "market",
+        requestBytes: 132,
+        contractAddress: "monoc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqxk4v02",
+        artifactProfile: "mono-rv32im-v1",
+        status: "available",
+        deploymentVerified: true,
+      },
+    ],
+  },
+};
+
 describe("wallet readiness", () => {
   it("marks v4.1 readiness when network, native fee display, receipt proof, and MRV forwarders align", () => {
-    const capabilities = {
-      blockNumber: 123n,
-      capabilities: {},
-      nativeModuleForwarders: {
-        market: [
-          {
-            module: "market",
-            requestBytes: 132,
-            contractAddress: "monoc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqxk4v02",
-            artifactProfile: "mono-rv32im-v1",
-            status: "available",
-            deploymentVerified: true,
-          },
-        ],
-      },
-    };
-
-    const readiness = buildWalletReadiness(STATUS, capabilities, null);
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null);
 
     expect(readiness.state).toBe("ready");
     expect(readiness.sampledAtBlock).toBe(123n);
@@ -68,7 +90,7 @@ describe("wallet readiness", () => {
     expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
       state: "ready",
       value: "compact + archive digest",
-      detail: expect.stringContaining("BLS round certificate"),
+      detail: expect.stringContaining("not wallet-verified"),
     });
     expect(readiness.items.find((item) => item.key === "mrv")?.value).toBe("1 verified");
   });
@@ -152,7 +174,7 @@ describe("wallet readiness", () => {
     })).toContain("2 archive signature records parsed");
   });
 
-  it("accepts nullable or BLS round certificate finality evidence without overstating finality", () => {
+  it("accepts nullable or BLS round certificate finality evidence without fabricating wallet verification", () => {
     expect(acceptsNoEvmFinalityEvidence(null)).toBe(true);
     expect(acceptsNoEvmFinalityEvidence(FINALITY_EVIDENCE)).toBe(true);
     expect(describeNoEvmFinalityEvidence(null)).toBe(
@@ -160,7 +182,8 @@ describe("wallet readiness", () => {
     );
     expect(describeNoEvmFinalityEvidence(FINALITY_EVIDENCE)).toBe(
       "BLS round certificate mono.no_evm_receipt_finality.v1; " +
-        "source blsRoundCertificate; round 77; 2 signers; not full live finality",
+        "source blsRoundCertificate; round 77; 2 signers; " +
+        "certificate parsed; not wallet-verified (trusted BLS finality config absent)",
     );
     expect(acceptsNoEvmFinalityEvidence({
       ...FINALITY_EVIDENCE,
@@ -176,6 +199,88 @@ describe("wallet readiness", () => {
         signerCount: 3,
       },
     })).toBe(false);
+  });
+
+  it("wallet-verifies BLS finality evidence when trusted threshold config is supplied", () => {
+    expect(acceptsNoEvmFinalityEvidence(
+      VERIFIED_FINALITY_EVIDENCE,
+      VERIFIED_FINALITY_TRUST,
+    )).toBe(true);
+    expect(describeNoEvmFinalityEvidence(
+      VERIFIED_FINALITY_EVIDENCE,
+      VERIFIED_FINALITY_TRUST,
+    )).toContain("wallet-verified BLS threshold 1/1");
+
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+      finalityTrust: VERIFIED_FINALITY_TRUST,
+    });
+
+    expect(readiness.state).toBe("ready");
+    expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
+      state: "ready",
+      value: "compact + BLS verified",
+      detail: expect.stringContaining("wallet-verified BLS threshold 1/1"),
+    });
+  });
+
+  it("fails closed when configured BLS finality trust does not match the evidence", () => {
+    const wrongChainTrust = {
+      ...VERIFIED_FINALITY_TRUST,
+      chainId: 69_421,
+    };
+
+    expect(acceptsNoEvmFinalityEvidence(
+      VERIFIED_FINALITY_EVIDENCE,
+      wrongChainTrust,
+    )).toBe(false);
+    expect(describeNoEvmFinalityEvidence(
+      VERIFIED_FINALITY_EVIDENCE,
+      wrongChainTrust,
+    )).toContain("wallet verification mismatch: signature invalid");
+
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
+      finalityTrust: wrongChainTrust,
+    });
+
+    expect(readiness.state).toBe("blocked");
+    expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
+      state: "blocked",
+      value: "not verified",
+      detail: expect.stringContaining("wallet verification mismatch"),
+    });
+  });
+
+  it("fails closed for incomplete or malformed configured BLS finality trust", () => {
+    expect(noEvmFinalityTrustConfigFromEnv({})).toMatchObject({
+      state: "unconfigured",
+    });
+
+    const incomplete = noEvmFinalityTrustConfigFromEnv({
+      VITE_MONO_BLS_FINALITY_CHAIN_ID: "69420",
+    });
+    expect(incomplete).toMatchObject({ state: "blocked" });
+    expect(acceptsNoEvmFinalityEvidence(FINALITY_EVIDENCE, incomplete)).toBe(false);
+    expect(describeNoEvmFinalityEvidence(FINALITY_EVIDENCE, incomplete)).toContain(
+      "wallet verification blocked: incomplete BLS finality trust config",
+    );
+
+    const malformed = noEvmFinalityTrustConfigFromEnv({
+      VITE_MONO_BLS_FINALITY_CHAIN_ID: "69420",
+      VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY: "0x12",
+      VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE: "7",
+      VITE_MONO_BLS_FINALITY_THRESHOLD: "1",
+    });
+    expect(malformed).toMatchObject({ state: "blocked" });
+
+    const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
+      finalityTrust: malformed,
+    });
+
+    expect(readiness.state).toBe("blocked");
+    expect(readiness.items.find((item) => item.key === "receipt-proof")?.detail)
+      .toContain("wallet verification blocked");
   });
 
   it("fails closed when native capability data is unavailable", () => {
