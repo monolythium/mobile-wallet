@@ -382,6 +382,74 @@ textarea {
   color: var(--ok);
 }
 
+/* v4.1 readiness */
+.mw-readiness__state {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--ok);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.mw-readiness__state.blocked {
+  color: var(--warn);
+}
+.mw-readiness,
+.mw-readiness__empty {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) minmax(76px, auto);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.mw-readiness:last-of-type {
+  border-bottom: none;
+}
+.mw-readiness__empty {
+  display: block;
+  color: var(--fg-300);
+  font-size: 12px;
+}
+.mw-readiness__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+}
+.mw-readiness__dot.ready {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+.mw-readiness__body {
+  min-width: 0;
+}
+.mw-readiness__label,
+.mw-readiness__value {
+  font-size: 12.5px;
+  color: var(--fg-100);
+  font-weight: 500;
+}
+.mw-readiness__value {
+  font-family: var(--f-mono);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.mw-readiness__detail {
+  margin-top: 2px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--fg-400);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mw-readiness__foot {
+  margin-top: 10px;
+  color: var(--fg-400);
+  font-size: 11px;
+}
+
 /* Status halo (chromatic, never filled pill) */
 .mw-halo {
   display: inline-flex;

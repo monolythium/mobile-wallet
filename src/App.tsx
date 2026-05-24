@@ -37,6 +37,11 @@ import { Onboarding } from "./screens/Onboarding";
 import { QrScanner } from "./screens/QrScanner";
 import { Sessions } from "./screens/Sessions";
 import { fetchChainStatus, type ChainStatus } from "./sdk/client";
+import {
+  buildOfflineWalletReadiness,
+  loadWalletReadiness,
+  type WalletReadiness,
+} from "./sdk/readiness";
 import { hasUnlockSecret } from "./sdk/auth";
 import { vaultBoundAddress } from "./sdk/vault";
 import {
@@ -74,6 +79,7 @@ export default function App() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [status, setStatus] = useState<ChainStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<WalletReadiness | null>(null);
   const [onboarding, setOnboarding] = useState<OnboardingState>("checking");
   const [selfAddress, setSelfAddress] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -98,10 +104,17 @@ export default function App() {
     const run = async () => {
       try {
         const s = await fetchChainStatus();
-        if (!cancelled) setStatus(s);
+        if (cancelled) return;
+        setStatus(s);
+        setStatusError(null);
+        const walletReadiness = await loadWalletReadiness(s);
+        if (!cancelled) setReadiness(walletReadiness);
       } catch (cause) {
-        if (!cancelled)
-          setStatusError((cause as Error)?.message ?? "rpc unreachable");
+        if (!cancelled) {
+          const message = (cause as Error)?.message ?? "rpc unreachable";
+          setStatusError(message);
+          setReadiness(buildOfflineWalletReadiness(message));
+        }
       }
     };
     void run();
@@ -350,6 +363,7 @@ export default function App() {
         <Home
           status={status}
           statusError={statusError}
+          readiness={readiness}
           selfAddress={selfAddress}
           openOperation={openOperation}
           onScan={openScanner}
