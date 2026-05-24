@@ -16,6 +16,10 @@ const STATUS: ChainStatus = {
   endpoint: "http://test.invalid",
 };
 
+const VALID_ARCHIVE_SIGNATURE =
+  `mono.snapshot.sig.v1:0x${"a1".repeat(20)}:0x${"b2".repeat(64)}`;
+const VALID_SIGNATURE_DIGEST = `0x${"c3".repeat(32)}`;
+
 const ARCHIVE_PROOF = {
   schema: "mono.no_evm_receipt_archive_binding.v1",
   source: "indexerReceiptArchiveContentDigest",
@@ -79,7 +83,7 @@ describe("wallet readiness", () => {
       .toBe(true);
     expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
       ...ARCHIVE_PROOF,
-      signatures: ["0xsignature"],
+      signatures: [VALID_ARCHIVE_SIGNATURE],
     })).toBe(true);
     expect(acceptsNoEvmCompactReceiptProofSource("validatorFinality", ARCHIVE_PROOF))
       .toBe(false);
@@ -93,16 +97,59 @@ describe("wallet readiness", () => {
     })).toBe(false);
   });
 
+  it("requires archive signatures to use the exact snapshot signature envelope", () => {
+    expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+      ...ARCHIVE_PROOF,
+      signatures: [VALID_ARCHIVE_SIGNATURE],
+    })).toBe(true);
+    expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+      ...ARCHIVE_PROOF,
+      signatures: [],
+    })).toBe(true);
+
+    for (const signature of [
+      `mono.snapshot.sig.v2:0x${"a1".repeat(20)}:0x${"b2".repeat(64)}`,
+      `mono.snapshot.sig.v1:0x${"a1".repeat(20)}:0x${"b2".repeat(64)}:extra`,
+      `mono.snapshot.sig.v1:0x${"a1".repeat(19)}:0x${"b2".repeat(64)}`,
+      `mono.snapshot.sig.v1:0x${"a1".repeat(20)}:0x`,
+      `mono.snapshot.sig.v1:0x${"a1".repeat(20)}:0xnothex`,
+    ]) {
+      expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+        ...ARCHIVE_PROOF,
+        signatures: [signature],
+      })).toBe(false);
+    }
+  });
+
+  it("accepts only nullable or 32-byte archive signature digests", () => {
+    expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+      ...ARCHIVE_PROOF,
+      signatureDigest: VALID_SIGNATURE_DIGEST,
+    })).toBe(true);
+    expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+      ...ARCHIVE_PROOF,
+      signatureDigest: null,
+    })).toBe(true);
+    expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+      ...ARCHIVE_PROOF,
+      signatureDigest: `0x${"c3".repeat(31)}`,
+    })).toBe(false);
+    expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+      ...ARCHIVE_PROOF,
+      signatureDigest: `0x${"c3".repeat(31)}zz`,
+    })).toBe(false);
+  });
+
   it("labels archive binding material without presenting it as validator finality", () => {
     expect(describeNoEvmArchiveMaterial(ARCHIVE_PROOF)).toBe(
       "archive binding mono.no_evm_receipt_archive_binding.v1; " +
         "content digest indexerReceiptArchiveContentDigest; " +
-        "signatures absent; not validator finality",
+        "signature records absent; not cryptographically verified; not validator finality",
     );
     expect(describeNoEvmArchiveMaterial({
       ...ARCHIVE_PROOF,
-      signatures: ["0xsig1", "0xsig2"],
-    })).toContain("2 archive signatures");
+      signatures: [VALID_ARCHIVE_SIGNATURE, VALID_ARCHIVE_SIGNATURE],
+    })).toContain("2 archive signature records parsed");
   });
 
   it("accepts nullable or BLS round certificate finality evidence without overstating finality", () => {
