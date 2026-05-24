@@ -60,6 +60,18 @@ export interface NoEvmArchiveProofMaterial {
   contentHash: unknown;
   signatureDigest?: unknown;
   signatures: unknown;
+  coveringSnapshot?: unknown;
+}
+
+export interface NoEvmArchiveCoveringSnapshotMaterial {
+  snapshotHeight: unknown;
+  manifestHash: unknown;
+  signatureDigest: unknown;
+  contentHash: unknown;
+  checkpointContentHash: unknown;
+  checkpointFrom: unknown;
+  checkpointTo: unknown;
+  signatures: unknown;
 }
 
 export interface NoEvmFinalityEvidence {
@@ -340,13 +352,18 @@ export function describeNoEvmArchiveMaterial(archiveProof: unknown): string {
   const signatureDetail = signatureCount === 0
     ? "signature records absent"
     : `${signatureCount} archive signature record${signatureCount === 1 ? "" : "s"} parsed`;
+  const coveringSnapshotDetail = archiveProof.coveringSnapshot == null
+    ? null
+    : `${archiveProof.coveringSnapshot.signatures.length.toString()} covering snapshot signature ` +
+      `record${archiveProof.coveringSnapshot.signatures.length === 1 ? "" : "s"} parsed`;
   return [
     `archive binding ${NO_EVM_ARCHIVE_PROOF_SCHEMA}`,
     `content digest ${NO_EVM_ARCHIVE_PROOF_SOURCE}`,
     signatureDetail,
+    coveringSnapshotDetail,
     "not cryptographically verified",
     "not validator finality",
-  ].join("; ");
+  ].filter((detail): detail is string => detail !== null).join("; ");
 }
 
 export function describeNoEvmFinalityEvidence(
@@ -443,6 +460,16 @@ function isSupportedArchiveProofMaterial(
   contentHash: string;
   signatureDigest?: string | null;
   signatures: string[];
+  coveringSnapshot?: {
+    snapshotHeight: number;
+    manifestHash: string;
+    signatureDigest: string;
+    contentHash: string;
+    checkpointContentHash: string;
+    checkpointFrom: number;
+    checkpointTo: number;
+    signatures: string[];
+  } | null;
 } {
   if (!isRecord(archiveProof)) return false;
   return (
@@ -452,7 +479,43 @@ function isSupportedArchiveProofMaterial(
     isHexHash(archiveProof.contentHash) &&
     (archiveProof.signatureDigest == null || isHexHash(archiveProof.signatureDigest)) &&
     Array.isArray(archiveProof.signatures) &&
-    archiveProof.signatures.every(isSnapshotSignature)
+    archiveProof.signatures.every(isSnapshotSignature) &&
+    isSupportedArchiveCoveringSnapshot(
+      archiveProof.coveringSnapshot,
+      archiveProof.contentHash,
+    )
+  );
+}
+
+function isSupportedArchiveCoveringSnapshot(
+  coveringSnapshot: unknown,
+  archiveContentHash: string,
+): coveringSnapshot is {
+  snapshotHeight: number;
+  manifestHash: string;
+  signatureDigest: string;
+  contentHash: string;
+  checkpointContentHash: string;
+  checkpointFrom: number;
+  checkpointTo: number;
+  signatures: string[];
+} | null | undefined {
+  if (coveringSnapshot == null) return true;
+  if (!isRecord(coveringSnapshot)) return false;
+  return (
+    isNonNegativeSafeInteger(coveringSnapshot.snapshotHeight) &&
+    isNonNegativeSafeInteger(coveringSnapshot.checkpointFrom) &&
+    isNonNegativeSafeInteger(coveringSnapshot.checkpointTo) &&
+    coveringSnapshot.checkpointFrom === 0 &&
+    coveringSnapshot.checkpointTo <= coveringSnapshot.snapshotHeight &&
+    isHexHash(coveringSnapshot.manifestHash) &&
+    isHexHash(coveringSnapshot.signatureDigest) &&
+    isHexHash(coveringSnapshot.contentHash) &&
+    isHexHash(coveringSnapshot.checkpointContentHash) &&
+    normalizeHex(coveringSnapshot.checkpointContentHash) === normalizeHex(archiveContentHash) &&
+    Array.isArray(coveringSnapshot.signatures) &&
+    coveringSnapshot.signatures.length > 0 &&
+    coveringSnapshot.signatures.every(isSnapshotSignature)
   );
 }
 
@@ -643,8 +706,12 @@ function hexToBytes(value: string): Uint8Array {
 function isSnapshotSignature(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    /^mono\.snapshot\.sig\.v1:0x[0-9a-fA-F]{40}:0x[0-9a-fA-F]+$/u.test(value)
+    /^mono\.snapshot\.sig\.v1:0x[0-9a-fA-F]{40}:0x(?:[0-9a-fA-F]{2})+$/u.test(value)
   );
+}
+
+function normalizeHex(value: string): string {
+  return value.toLowerCase();
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
