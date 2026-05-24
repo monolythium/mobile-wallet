@@ -29,6 +29,17 @@ const ARCHIVE_PROOF = {
   signatures: [],
 };
 
+const COVERING_SNAPSHOT = {
+  snapshotHeight: 100,
+  manifestHash: `0x${"61".repeat(32)}`,
+  signatureDigest: VALID_SIGNATURE_DIGEST,
+  contentHash: `0x${"62".repeat(32)}`,
+  checkpointContentHash: ARCHIVE_PROOF.contentHash,
+  checkpointFrom: 0,
+  checkpointTo: 100,
+  signatures: [VALID_ARCHIVE_SIGNATURE],
+};
+
 const FINALITY_EVIDENCE = {
   schema: "mono.no_evm_receipt_finality.v1",
   source: "blsRoundCertificate",
@@ -135,6 +146,7 @@ describe("wallet readiness", () => {
       `mono.snapshot.sig.v1:0x${"a1".repeat(19)}:0x${"b2".repeat(64)}`,
       `mono.snapshot.sig.v1:0x${"a1".repeat(20)}:0x`,
       `mono.snapshot.sig.v1:0x${"a1".repeat(20)}:0xnothex`,
+      `mono.snapshot.sig.v1:0x${"a1".repeat(20)}:0xabc`,
     ]) {
       expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
         ...ARCHIVE_PROOF,
@@ -160,6 +172,48 @@ describe("wallet readiness", () => {
       ...ARCHIVE_PROOF,
       signatureDigest: `0x${"c3".repeat(31)}zz`,
     })).toBe(false);
+  });
+
+  it("accepts archive proofs with a signed covering snapshot checkpoint", () => {
+    const proof = {
+      ...ARCHIVE_PROOF,
+      signatureDigest: null,
+      signatures: [],
+      coveringSnapshot: COVERING_SNAPSHOT,
+    };
+
+    expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", proof)).toBe(true);
+    expect(describeNoEvmArchiveMaterial(proof)).toContain(
+      "1 covering snapshot signature record parsed",
+    );
+    expect(describeNoEvmArchiveMaterial(proof)).toContain(
+      "not cryptographically verified",
+    );
+  });
+
+  it("fails closed for malformed archive covering snapshots", () => {
+    const invalidSnapshots = [
+      { checkpointFrom: 1 },
+      { checkpointTo: 101 },
+      { checkpointContentHash: `0x${"55".repeat(32)}` },
+      { signatureDigest: null },
+      { signatures: [] },
+      { signatures: [`mono.snapshot.sig.v1:0x${"a1".repeat(19)}:0x${"b2".repeat(64)}`] },
+      { manifestHash: `0x${"61".repeat(31)}` },
+      { snapshotHeight: Number.MAX_SAFE_INTEGER + 1 },
+    ];
+
+    for (const patch of invalidSnapshots) {
+      expect(acceptsNoEvmCompactReceiptProofSource("indexerReceiptArchive", {
+        ...ARCHIVE_PROOF,
+        signatureDigest: null,
+        signatures: [],
+        coveringSnapshot: {
+          ...COVERING_SNAPSHOT,
+          ...patch,
+        },
+      })).toBe(false);
+    }
   });
 
   it("labels archive binding material without presenting it as validator finality", () => {
