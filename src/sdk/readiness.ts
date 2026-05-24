@@ -1,7 +1,12 @@
 import {
+  ML_DSA_65_PUBLIC_KEY_LEN,
   MONOLYTHIUM_TESTNET_CHAIN_ID,
   MONOLYTHIUM_TESTNET_NETWORK_NAME,
+  verifyNoEvmArchiveProofSignatures,
   verifyNoEvmFinalityEvidenceThreshold,
+  type NoEvmArchiveProof as SdkNoEvmArchiveProof,
+  type NoEvmArchiveSignatureVerification,
+  type NoEvmArchiveTrustedSigner,
   type NoEvmBlsFinalityVerification,
   type NoEvmFinalityEvidence as SdkNoEvmFinalityEvidence,
 } from "@monolythium/core-sdk";
@@ -74,6 +79,27 @@ export interface NoEvmArchiveCoveringSnapshotMaterial {
   signatures: unknown;
 }
 
+interface SupportedNoEvmArchiveCoveringSnapshot {
+  snapshotHeight: number;
+  manifestHash: string;
+  signatureDigest: string;
+  contentHash: string;
+  checkpointContentHash: string;
+  checkpointFrom: number;
+  checkpointTo: number;
+  signatures: string[];
+}
+
+type SupportedNoEvmArchiveProof = SdkNoEvmArchiveProof & {
+  schema: typeof NO_EVM_ARCHIVE_PROOF_SCHEMA;
+  source: typeof NO_EVM_ARCHIVE_PROOF_SOURCE;
+  manifestHash: string;
+  contentHash: string;
+  signatureDigest?: string | null;
+  signatures: string[];
+  coveringSnapshot?: SupportedNoEvmArchiveCoveringSnapshot | null;
+};
+
 export interface NoEvmFinalityEvidence {
   schema: unknown;
   source: unknown;
@@ -85,6 +111,13 @@ export interface NoEvmFinalityTrustConfig {
   chainId: number | bigint | string;
   clusterPublicKey: string | Uint8Array | readonly number[];
   committeeSize: number | string;
+  threshold: number | string;
+}
+
+type NoEvmArchiveTrustedPublicKey = string | Uint8Array | readonly number[];
+
+export interface NoEvmArchiveTrustConfig {
+  trustedPublicKeys: string | readonly NoEvmArchiveTrustedPublicKey[];
   threshold: number | string;
 }
 
@@ -101,7 +134,20 @@ export type NoEvmFinalityTrustConfigResolution =
   }
   | { state: "blocked"; detail: string };
 
+export type NoEvmArchiveTrustConfigResolution =
+  | { state: "unconfigured"; detail: string }
+  | {
+    state: "configured";
+    config: {
+      trustedSigners: NoEvmArchiveTrustedSigner[];
+      threshold: number;
+    };
+  }
+  | { state: "blocked"; detail: string };
+
 export interface WalletReadinessOptions {
+  archiveProof?: unknown;
+  archiveTrust?: NoEvmArchiveTrustConfig | NoEvmArchiveTrustConfigResolution | null;
   finalityEvidence?: unknown;
   finalityTrust?: NoEvmFinalityTrustConfig | NoEvmFinalityTrustConfigResolution | null;
 }
@@ -131,7 +177,7 @@ export async function loadWalletReadiness(
   status: ChainStatus,
   options: WalletReadinessOptions = {},
 ): Promise<WalletReadiness> {
-  const readinessOptions = withDefaultFinalityTrustConfig(options);
+  const readinessOptions = withDefaultTrustConfig(options);
   try {
     const capabilities = await getProvider().rpcClient.lythCapabilities(
       "latest",
@@ -218,6 +264,35 @@ export function noEvmFinalityTrustConfigFromEnv(
   });
 }
 
+export function noEvmArchiveTrustConfigFromEnv(
+  env: Record<string, unknown> = import.meta.env,
+): NoEvmArchiveTrustConfigResolution {
+  const raw = {
+    trustedPublicKeys: env.VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS,
+    threshold: env.VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD,
+  };
+  const values = Object.values(raw).map(readEnvString);
+  const configuredCount = values.filter((value) => value !== undefined).length;
+  if (configuredCount === 0) {
+    return {
+      state: "unconfigured",
+      detail: "trusted archive signer config absent",
+    };
+  }
+  if (configuredCount !== values.length) {
+    return {
+      state: "blocked",
+      detail:
+        "incomplete archive signer trust config; set VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS " +
+        "and VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD",
+    };
+  }
+  return resolveNoEvmArchiveTrustConfig({
+    trustedPublicKeys: values[0]!,
+    threshold: values[1]!,
+  });
+}
+
 export function resolveNoEvmFinalityTrustConfig(
   finalityTrust: NoEvmFinalityTrustConfig | NoEvmFinalityTrustConfigResolution | null | undefined,
 ): NoEvmFinalityTrustConfigResolution {
@@ -261,6 +336,42 @@ export function resolveNoEvmFinalityTrustConfig(
   };
 }
 
+export function resolveNoEvmArchiveTrustConfig(
+  archiveTrust: NoEvmArchiveTrustConfig | NoEvmArchiveTrustConfigResolution | null | undefined,
+): NoEvmArchiveTrustConfigResolution {
+  if (archiveTrust == null) {
+    return {
+      state: "unconfigured",
+      detail: "trusted archive signer config absent",
+    };
+  }
+  if (isArchiveTrustConfigResolution(archiveTrust)) return archiveTrust;
+
+  const trustedSigners = parseArchiveTrustedPublicKeys(
+    archiveTrust.trustedPublicKeys,
+    "trustedPublicKeys",
+  );
+  if (trustedSigners.state === "blocked") return trustedSigners;
+  const threshold = parsePositiveSafeInteger(archiveTrust.threshold, "threshold");
+  if (threshold.state === "blocked") return threshold;
+  if (threshold.value > trustedSigners.value.length) {
+    return {
+      state: "blocked",
+      detail:
+        `threshold ${threshold.value.toString()} exceeds trusted archive signer count ` +
+        trustedSigners.value.length.toString(),
+    };
+  }
+
+  return {
+    state: "configured",
+    config: {
+      trustedSigners: trustedSigners.value,
+      threshold: threshold.value,
+    },
+  };
+}
+
 function networkItem(chainId: bigint | null): ReadinessItem {
   const ready = chainId === MONOLYTHIUM_TESTNET_CHAIN_ID;
   return {
@@ -292,6 +403,14 @@ function receiptProofItem(options: WalletReadinessOptions): ReadinessItem {
     finalityEvidence,
     options.finalityTrust,
   );
+  const archiveProofSupplied = "archiveProof" in options;
+  const archiveProof = archiveProofSupplied
+    ? options.archiveProof
+    : SUPPORTED_INDEXER_ARCHIVE_PROOF;
+  const archive = assessNoEvmArchiveMaterial(
+    archiveProof,
+    archiveProofSupplied ? options.archiveTrust : null,
+  );
   const ready =
     NO_EVM_RECEIPT_PROOF_SCHEMA === "mono.no_evm_receipt_proof.v1" &&
     NO_EVM_COMPACT_INCLUSION_PROOF_SCHEMA ===
@@ -301,23 +420,21 @@ function receiptProofItem(options: WalletReadinessOptions): ReadinessItem {
     acceptsNoEvmCompactReceiptProofSource("liveBlockCache", null) &&
     acceptsNoEvmCompactReceiptProofSource(
       "indexerReceiptArchive",
-      SUPPORTED_INDEXER_ARCHIVE_PROOF,
+      archiveProof,
       finalityEvidence,
       options.finalityTrust,
+      archiveProofSupplied ? options.archiveTrust : null,
     ) &&
+    archive.accepted &&
     finality.accepted;
   return {
     key: "receipt-proof",
     label: "Receipt proofs",
-    value: ready
-      ? finality.walletVerified
-        ? "compact + BLS verified"
-        : "compact + archive digest"
-      : "not verified",
+    value: receiptProofValue(ready, archive.walletVerified, finality.walletVerified),
     state: ready ? "ready" : "blocked",
     detail: [
       "Compact inclusion from live cache or indexer archive",
-      describeNoEvmArchiveMaterial(SUPPORTED_INDEXER_ARCHIVE_PROOF),
+      archive.detail,
       finality.detail,
     ].join("; "),
   };
@@ -328,11 +445,12 @@ export function acceptsNoEvmCompactReceiptProofSource(
   archiveProof: unknown,
   finalityEvidence: unknown = null,
   finalityTrust?: NoEvmFinalityTrustConfig | NoEvmFinalityTrustConfigResolution | null,
+  archiveTrust?: NoEvmArchiveTrustConfig | NoEvmArchiveTrustConfigResolution | null,
 ): boolean {
   if (!acceptsNoEvmFinalityEvidence(finalityEvidence, finalityTrust)) return false;
   if (historySource === "liveBlockCache") return archiveProof == null;
   if (historySource !== "indexerReceiptArchive") return false;
-  return archiveProof == null || isSupportedArchiveProofMaterial(archiveProof);
+  return assessNoEvmArchiveMaterial(archiveProof, archiveTrust).accepted;
 }
 
 export function acceptsNoEvmFinalityEvidence(
@@ -342,16 +460,103 @@ export function acceptsNoEvmFinalityEvidence(
   return assessNoEvmFinalityEvidence(finalityEvidence, finalityTrust).accepted;
 }
 
-export function describeNoEvmArchiveMaterial(archiveProof: unknown): string {
-  if (archiveProof == null) return "archive binding absent";
+export function describeNoEvmArchiveMaterial(
+  archiveProof: unknown,
+  archiveTrust?: NoEvmArchiveTrustConfig | NoEvmArchiveTrustConfigResolution | null,
+): string {
+  return assessNoEvmArchiveMaterial(archiveProof, archiveTrust).detail;
+}
+
+function assessNoEvmArchiveMaterial(
+  archiveProof: unknown,
+  archiveTrust?: NoEvmArchiveTrustConfig | NoEvmArchiveTrustConfigResolution | null,
+): {
+  accepted: boolean;
+  walletVerified: boolean;
+  detail: string;
+} {
+  const trust = resolveNoEvmArchiveTrustConfig(archiveTrust);
+  if (archiveProof == null) {
+    return {
+      accepted: trust.state !== "blocked",
+      walletVerified: false,
+      detail: trust.state === "blocked"
+        ? `archive binding absent; wallet verification blocked: ${trust.detail}`
+        : "archive binding absent",
+    };
+  }
   if (!isSupportedArchiveProofMaterial(archiveProof)) {
-    return "unsupported archive binding";
+    return {
+      accepted: false,
+      walletVerified: false,
+      detail: "unsupported archive binding; not wallet-verified; not validator finality",
+    };
   }
 
+  const parsed = describeParsedNoEvmArchiveMaterial(archiveProof);
+  if (trust.state === "unconfigured") {
+    return {
+      accepted: true,
+      walletVerified: false,
+      detail:
+        `${parsed}; archive proof parsed; not wallet-verified (${trust.detail}); ` +
+        "not validator finality",
+    };
+  }
+  if (trust.state === "blocked") {
+    return {
+      accepted: false,
+      walletVerified: false,
+      detail: `${parsed}; wallet verification blocked: ${trust.detail}; not validator finality`,
+    };
+  }
+
+  let verification: NoEvmArchiveSignatureVerification;
+  try {
+    verification = verifyNoEvmArchiveProofSignatures(
+      archiveProofForSdkVerification(archiveProof),
+      trust.config.trustedSigners,
+      trust.config.threshold,
+    );
+  } catch (cause) {
+    return {
+      accepted: false,
+      walletVerified: false,
+      detail:
+        `${parsed}; wallet verification blocked: ` +
+        `${formatArchiveVerificationErrorMessage(cause)}; not validator finality`,
+    };
+  }
+
+  const material = archiveSignatureMaterialLabel(archiveProof);
+  if (verification.verified) {
+    return {
+      accepted: true,
+      walletVerified: true,
+      detail:
+        `${parsed}; wallet-verified ML-DSA archive threshold ` +
+        `${verification.validSigners.length.toString()}/${verification.threshold.toString()} ` +
+        `via ${material}; not validator finality`,
+    };
+  }
+
+  return {
+    accepted: false,
+    walletVerified: false,
+    detail:
+      `${parsed}; wallet verification mismatch: ` +
+      `${describeArchiveSignatureMismatch(verification)}; not validator finality`,
+  };
+}
+
+function describeParsedNoEvmArchiveMaterial(
+  archiveProof: SupportedNoEvmArchiveProof,
+): string {
   const signatureCount = archiveProof.signatures.length;
   const signatureDetail = signatureCount === 0
     ? "signature records absent"
-    : `${signatureCount} archive signature record${signatureCount === 1 ? "" : "s"} parsed`;
+    : `${signatureCount} exact-height archive signature ` +
+      `record${signatureCount === 1 ? "" : "s"} parsed`;
   const coveringSnapshotDetail = archiveProof.coveringSnapshot == null
     ? null
     : `${archiveProof.coveringSnapshot.signatures.length.toString()} covering snapshot signature ` +
@@ -361,8 +566,6 @@ export function describeNoEvmArchiveMaterial(archiveProof: unknown): string {
     `content digest ${NO_EVM_ARCHIVE_PROOF_SOURCE}`,
     signatureDetail,
     coveringSnapshotDetail,
-    "not cryptographically verified",
-    "not validator finality",
   ].filter((detail): detail is string => detail !== null).join("; ");
 }
 
@@ -453,24 +656,7 @@ function assessNoEvmFinalityEvidence(
 
 function isSupportedArchiveProofMaterial(
   archiveProof: unknown,
-): archiveProof is {
-  schema: typeof NO_EVM_ARCHIVE_PROOF_SCHEMA;
-  source: typeof NO_EVM_ARCHIVE_PROOF_SOURCE;
-  manifestHash: string;
-  contentHash: string;
-  signatureDigest?: string | null;
-  signatures: string[];
-  coveringSnapshot?: {
-    snapshotHeight: number;
-    manifestHash: string;
-    signatureDigest: string;
-    contentHash: string;
-    checkpointContentHash: string;
-    checkpointFrom: number;
-    checkpointTo: number;
-    signatures: string[];
-  } | null;
-} {
+): archiveProof is SupportedNoEvmArchiveProof {
   if (!isRecord(archiveProof)) return false;
   return (
     archiveProof.schema === NO_EVM_ARCHIVE_PROOF_SCHEMA &&
@@ -552,17 +738,31 @@ function isSupportedBlsRoundCertificateFinalityEvidence(
   );
 }
 
-function withDefaultFinalityTrustConfig(
+function withDefaultTrustConfig(
   options: WalletReadinessOptions,
 ): WalletReadinessOptions {
-  return "finalityTrust" in options
+  const withFinalityTrust = "finalityTrust" in options
     ? options
     : { ...options, finalityTrust: noEvmFinalityTrustConfigFromEnv() };
+  return "archiveTrust" in withFinalityTrust
+    ? withFinalityTrust
+    : { ...withFinalityTrust, archiveTrust: noEvmArchiveTrustConfigFromEnv() };
 }
 
 function isFinalityTrustConfigResolution(
   value: NoEvmFinalityTrustConfig | NoEvmFinalityTrustConfigResolution,
 ): value is NoEvmFinalityTrustConfigResolution {
+  return (
+    isRecord(value) &&
+    (value.state === "unconfigured" ||
+      value.state === "configured" ||
+      value.state === "blocked")
+  );
+}
+
+function isArchiveTrustConfigResolution(
+  value: NoEvmArchiveTrustConfig | NoEvmArchiveTrustConfigResolution,
+): value is NoEvmArchiveTrustConfigResolution {
   return (
     isRecord(value) &&
     (value.state === "unconfigured" ||
@@ -655,6 +855,148 @@ function parseBlsPublicKey(
   };
 }
 
+function parseArchiveTrustedPublicKeys(
+  value: unknown,
+  field: string,
+): { state: "ok"; value: NoEvmArchiveTrustedSigner[] } | { state: "blocked"; detail: string } {
+  const entries = typeof value === "string"
+    ? value.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+    : Array.isArray(value)
+      ? value
+      : null;
+  if (entries == null) {
+    return {
+      state: "blocked",
+      detail: `${field} must be a comma-separated string or array`,
+    };
+  }
+  if (entries.length === 0) {
+    return { state: "blocked", detail: `${field} must include at least one public key` };
+  }
+
+  const trustedSigners: NoEvmArchiveTrustedSigner[] = [];
+  for (const [index, entry] of entries.entries()) {
+    const publicKey = parseArchivePublicKey(entry, `${field}[${index.toString()}]`);
+    if (publicKey.state === "blocked") return publicKey;
+    trustedSigners.push({ publicKey: publicKey.value });
+  }
+  return { state: "ok", value: trustedSigners };
+}
+
+function parseArchivePublicKey(
+  value: unknown,
+  field: string,
+): { state: "ok"; value: Uint8Array } | { state: "blocked"; detail: string } {
+  const hexDetail =
+    `${field} must be a 0x-prefixed ${ML_DSA_65_PUBLIC_KEY_LEN.toString()}-byte ` +
+    "ML-DSA-65 public key";
+  if (typeof value === "string") {
+    if (!isHexBytesOfLength(value, ML_DSA_65_PUBLIC_KEY_LEN)) {
+      return { state: "blocked", detail: hexDetail };
+    }
+    return { state: "ok", value: hexToBytes(value) };
+  }
+  if (value instanceof Uint8Array) {
+    if (value.length !== ML_DSA_65_PUBLIC_KEY_LEN) {
+      return {
+        state: "blocked",
+        detail: `${field} must be ${ML_DSA_65_PUBLIC_KEY_LEN.toString()} bytes`,
+      };
+    }
+    return { state: "ok", value: value.slice() };
+  }
+  if (Array.isArray(value)) {
+    if (value.length !== ML_DSA_65_PUBLIC_KEY_LEN || !value.every(isByte)) {
+      return {
+        state: "blocked",
+        detail: `${field} must be ${ML_DSA_65_PUBLIC_KEY_LEN.toString()} bytes`,
+      };
+    }
+    return { state: "ok", value: new Uint8Array(value) };
+  }
+  return { state: "blocked", detail: hexDetail };
+}
+
+function receiptProofValue(
+  ready: boolean,
+  archiveWalletVerified: boolean,
+  finalityWalletVerified: boolean,
+): string {
+  if (!ready) return "not verified";
+  if (archiveWalletVerified && finalityWalletVerified) {
+    return "compact + BLS/archive verified";
+  }
+  if (finalityWalletVerified) return "compact + BLS verified";
+  if (archiveWalletVerified) return "compact + archive signatures verified";
+  return "compact + archive digest";
+}
+
+function archiveSignatureMaterialLabel(
+  archiveProof: SupportedNoEvmArchiveProof,
+): string {
+  if (archiveProof.signatureDigest != null || archiveProof.signatures.length > 0) {
+    return "exact-height archive signatures";
+  }
+  if (archiveProof.coveringSnapshot != null) return "covering snapshot signatures";
+  return "archive signatures";
+}
+
+function archiveProofForSdkVerification(
+  archiveProof: SupportedNoEvmArchiveProof,
+): SdkNoEvmArchiveProof {
+  if (archiveProof.signatureDigest != null || archiveProof.signatures.length > 0) {
+    if (archiveProof.signatureDigest !== null) return archiveProof;
+    const normalized: SdkNoEvmArchiveProof = { ...archiveProof };
+    delete normalized.signatureDigest;
+    return normalized;
+  }
+  if (archiveProof.coveringSnapshot != null) {
+    return {
+      schema: archiveProof.schema,
+      source: archiveProof.source,
+      manifestHash: archiveProof.coveringSnapshot.manifestHash,
+      contentHash: archiveProof.contentHash,
+      signatureDigest: archiveProof.coveringSnapshot.signatureDigest,
+      signatures: archiveProof.coveringSnapshot.signatures,
+    };
+  }
+  const normalized: SdkNoEvmArchiveProof = { ...archiveProof };
+  delete normalized.signatureDigest;
+  return normalized;
+}
+
+function describeArchiveSignatureMismatch(
+  verification: NoEvmArchiveSignatureVerification,
+): string {
+  const reasons = new Set<string>();
+  for (const issue of verification.issues) {
+    switch (issue.code) {
+      case "missing_signature_digest":
+        reasons.add("missing signature digest");
+        break;
+      case "threshold_not_met":
+        reasons.add(
+          `threshold ${verification.validSigners.length.toString()}/` +
+            `${verification.threshold.toString()} not met`,
+        );
+        break;
+      case "duplicate_signer":
+        reasons.add("duplicate signer");
+        break;
+      case "untrusted_signer":
+        reasons.add("untrusted signer");
+        break;
+      case "invalid_signature":
+        reasons.add("signature invalid");
+        break;
+      case "invalid_trusted_public_key":
+        reasons.add("trusted public key invalid");
+        break;
+    }
+  }
+  return Array.from(reasons).join(", ") || "archive signatures not verified";
+}
+
 function describeBlsFinalityMismatch(
   verification: NoEvmBlsFinalityVerification,
 ): string {
@@ -674,6 +1016,10 @@ function describeBlsFinalityMismatch(
 
 function formatErrorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : "BLS finality verification failed";
+}
+
+function formatArchiveVerificationErrorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "archive signature verification failed";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
