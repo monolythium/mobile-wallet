@@ -55,6 +55,7 @@ export interface NoEvmArchiveProofMaterial {
   source: unknown;
   manifestHash: unknown;
   contentHash: unknown;
+  signatureDigest?: unknown;
   signatures: unknown;
 }
 
@@ -215,12 +216,13 @@ export function describeNoEvmArchiveMaterial(archiveProof: unknown): string {
 
   const signatureCount = archiveProof.signatures.length;
   const signatureDetail = signatureCount === 0
-    ? "signatures absent"
-    : `${signatureCount} archive signature${signatureCount === 1 ? "" : "s"}`;
+    ? "signature records absent"
+    : `${signatureCount} archive signature record${signatureCount === 1 ? "" : "s"} parsed`;
   return [
     `archive binding ${NO_EVM_ARCHIVE_PROOF_SCHEMA}`,
     `content digest ${NO_EVM_ARCHIVE_PROOF_SOURCE}`,
     signatureDetail,
+    "not cryptographically verified",
     "not validator finality",
   ].join("; ");
 }
@@ -251,6 +253,7 @@ function isSupportedArchiveProofMaterial(
   source: typeof NO_EVM_ARCHIVE_PROOF_SOURCE;
   manifestHash: string;
   contentHash: string;
+  signatureDigest?: string | null;
   signatures: string[];
 } {
   if (!isRecord(archiveProof)) return false;
@@ -259,8 +262,9 @@ function isSupportedArchiveProofMaterial(
     archiveProof.source === NO_EVM_ARCHIVE_PROOF_SOURCE &&
     isHexHash(archiveProof.manifestHash) &&
     isHexHash(archiveProof.contentHash) &&
+    (archiveProof.signatureDigest == null || isHexHash(archiveProof.signatureDigest)) &&
     Array.isArray(archiveProof.signatures) &&
-    archiveProof.signatures.every((signature) => typeof signature === "string")
+    archiveProof.signatures.every(isSnapshotSignature)
   );
 }
 
@@ -303,6 +307,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isHexHash(value: unknown): value is string {
   return typeof value === "string" && /^0x[0-9a-fA-F]{64}$/u.test(value);
+}
+
+function isSnapshotSignature(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^mono\.snapshot\.sig\.v1:0x[0-9a-fA-F]{40}:0x[0-9a-fA-F]+$/u.test(value)
+  );
 }
 
 function isNonEmptyString(value: unknown): value is string {
