@@ -3,6 +3,7 @@
 // Hero balance + quick actions + tokens preview + recent activity.
 
 import { Icon } from "../components/Icon";
+import { addressToTypedBech32 } from "@monolythium/core-sdk";
 import type { OperationRequest } from "../components/OperationsDrawer";
 import type { ChainStatus } from "../sdk/client";
 import type { WalletReadiness } from "../sdk/readiness";
@@ -13,9 +14,8 @@ interface Props {
   status: ChainStatus | null;
   statusError: string | null;
   readiness: WalletReadiness | null;
-  /** EIP-55 lowercase address bound to the unlocked vault. `null` until
-   *  the bound address has been resolved (the App resolves it once via
-   *  the password unlock at onboarding-complete time). */
+  /** Internal 0x address bound to the unlocked vault. `null` until
+   *  the bound address has been resolved; public UI renders typed mono1. */
   selfAddress: string | null;
   openOperation: (req: OperationRequest) => void;
   /** Scan affordance: opens the full-screen QR scanner. The scanned
@@ -31,9 +31,13 @@ interface Props {
  * lands these go away.
  */
 const SEND_DEMO = {
-  to: "0x000000000000000000000000000000000000dead",
+  to: addressToTypedBech32("user", "0x000000000000000000000000000000000000dead"),
   amountLyth: "0.001",
 };
+const RECEIVE_DEMO_ADDRESS = addressToTypedBech32(
+  "user",
+  "0x2222222222222222222222222222222222222222",
+);
 
 const DEMO_TOKENS = [
   { sym: "LYTH", name: "Monolythium", amount: 14_280.41, priceUsd: 8.42, chg24h: 2.4, primary: true },
@@ -66,13 +70,14 @@ export function Home({ status, statusError, readiness, selfAddress, openOperatio
       });
       return;
     }
+    const selfAddressTyped = addressToTypedBech32("user", selfAddress);
     const chainLabel = status ? `chain ${status.chainId.toString()}` : "(querying)";
     openOperation({
       kind: "send",
       title: `Send ${SEND_DEMO.amountLyth} LYTH`,
       summary: `Send ${SEND_DEMO.amountLyth} LYTH to ${shortAddr(SEND_DEMO.to)} on ${chainLabel}. The chain confirms in roughly one second.`,
       details: [
-        { k: "From", v: selfAddress, mono: true },
+        { k: "From", v: selfAddressTyped, mono: true },
         { k: "To", v: SEND_DEMO.to, mono: true },
         { k: "Asset", v: "LYTH" },
         { k: "Amount", v: SEND_DEMO.amountLyth, mono: true },
@@ -85,7 +90,7 @@ export function Home({ status, statusError, readiness, selfAddress, openOperatio
           address: selfAddress,
         });
         const result = await sendLyth(signer, {
-          from: selfAddress,
+          from: selfAddressTyped,
           to: SEND_DEMO.to,
           amountLyth: SEND_DEMO.amountLyth,
         });
@@ -128,7 +133,7 @@ export function Home({ status, statusError, readiness, selfAddress, openOperatio
                 title: "Receive LYTH",
                 summary: "Share your address or QR code with the sender.",
                 details: [
-                  { k: "Address", v: "mono1:demo…42a8", mono: true },
+                  { k: "Address", v: RECEIVE_DEMO_ADDRESS, mono: true },
                   { k: "Network", v: "Monolythium v4.0 testnet" },
                 ],
                 confirmLabel: "Show QR",

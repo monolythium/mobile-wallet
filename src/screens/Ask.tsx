@@ -3,6 +3,7 @@
 // Operations drawer so a destructive step never bypasses the keychain.
 
 import { useState } from "react";
+import { addressToTypedBech32 } from "@monolythium/core-sdk";
 import { Icon } from "../components/Icon";
 import type { OperationRequest } from "../components/OperationsDrawer";
 
@@ -16,6 +17,10 @@ const SUGGESTIONS = [
   "Show me my last cluster swap.",
   "Send 50 LYTH to Mira.",
 ];
+const MIRA_ADDRESS = addressToTypedBech32(
+  "user",
+  "0x1111111111111111111111111111111111111111",
+);
 
 interface Turn {
   role: "you" | "wallet";
@@ -40,7 +45,7 @@ export function Ask({ openOperation }: Props) {
       next.push({
         role: "wallet",
         text:
-          "Drafted: send 50 LYTH to Mira Bell (mono1:demo…42a8). Open the Operations drawer to sign and submit.",
+          `Drafted: send 50 LYTH to Mira Bell (${shortAddr(MIRA_ADDRESS)}). Open the Operations drawer to sign and submit.`,
       });
       setTurns(next);
       setDraft("");
@@ -55,7 +60,7 @@ export function Ask({ openOperation }: Props) {
               { k: "Asset", v: "LYTH" },
               { k: "Amount", v: "50.00", mono: true },
               { k: "To", v: "Mira Bell" },
-              { k: "Address", v: "mono1:demo…42a8", mono: true },
+              { k: "Address", v: MIRA_ADDRESS, mono: true },
               { k: "Drafted by", v: "wallet AI" },
             ],
             confirmLabel: "Sign and send",
@@ -150,4 +155,9 @@ export function Ask({ openOperation }: Props) {
       </button>
     </div>
   );
+}
+
+function shortAddr(s: string): string {
+  if (s.length <= 18) return s;
+  return `${s.slice(0, 10)}…${s.slice(-6)}`;
 }

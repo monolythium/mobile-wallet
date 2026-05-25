@@ -123,9 +123,9 @@ export default function App() {
     };
   }, [onboarding]);
 
-  // Resolve the vault-bound address. The envelope carries the public
-  // address as a plaintext header field so this round-trip never
-  // triggers a biometric prompt — only `selfAddress` shows up in the UI.
+  // Resolve the vault-bound internal address. The envelope carries it as
+  // a plaintext header field so this round-trip never triggers a biometric
+  // prompt; public screens convert it to typed mono1 before display.
   useEffect(() => {
     if (onboarding !== "complete") return;
     let cancelled = false;

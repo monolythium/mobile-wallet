@@ -2,6 +2,12 @@
 // Read-only mobile view; full export lives in the desktop wallet.
 
 import { Icon } from "../components/Icon";
+import { addressToTypedBech32 } from "@monolythium/core-sdk";
+
+const MIRA_ADDRESS = addressToTypedBech32(
+  "user",
+  "0x1111111111111111111111111111111111111111",
+);
 
 const ENTRIES = [
   {
@@ -9,7 +15,7 @@ const ENTRIES = [
     when: "today 14:02",
     actor: "this device",
     action: "send 100.00 LYTH",
-    target: "mono1:demo…42a8",
+    target: MIRA_ADDRESS,
     halo: "ok" as const,
   },
   {
