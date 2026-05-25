@@ -9,15 +9,13 @@
 //
 // Recognised inputs:
 //
-//   monolythium://send?to=0x..&value=..&token=0x..
+//   monolythium://send?to=mono1..&value=..&token=monoc1..
 //   monolythium://stake?cluster=C-003&clusterId=3&chainId=69420
 //   monolythium://sign?type=personal&message=0x..
 //   monolythium://sign?type=typed&domain=..&message=..  (EIP-712, JSON-encoded)
 //   monolythium://wc?uri=wc:<topic>@2?relay-protocol=irn&symKey=..
-//   lyth:<address>?value=..&token=..             (shorthand send)
+//   lyth:<mono1-address>?value=..&token=..       (shorthand send)
 //   wc:<topic>@2?relay-protocol=irn&symKey=..    (raw WalletConnect URI)
-//   ethereum:<address>?value=..                  (EIP-681, narrow accept)
-//   <0x...>                                       (bare 20-byte address, plain text)
 //
 // Anything that doesn't match returns `{ kind: "unknown", raw }` and the
 // caller renders an "unrecognised request" sheet.
@@ -27,15 +25,21 @@
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import {
+  ADDRESS_KIND_HRPS,
+  typedBech32ToAddress,
+  type AddressKind,
+} from "@monolythium/core-sdk";
 
 export interface SendAction {
   kind: "send";
+  /** Typed ADR-0038 user address (`mono1...`). */
   to: string;
   /** Native base-unit decimal string. Optional for asset-only deep links. */
   value?: string;
-  /** ERC-20 contract address. Absent = native LYTH. */
+  /** Typed ADR-0038 contract address (`monoc1...`). Absent = native LYTH. */
   token?: string;
-  /** Optional EVM chain id, decimal. Absent = use the wallet's active chain. */
+  /** Optional Monolythium chain id, decimal. Absent = use the wallet's active chain. */
   chainId?: number;
   raw: string;
 }
@@ -67,7 +71,7 @@ export interface StakeAction {
   cluster?: string;
   /** Numeric cluster id when provided by an explorer. */
   clusterId?: number;
-  /** Optional EVM chain id, decimal. Absent = use the wallet's active chain. */
+  /** Optional Monolythium chain id, decimal. Absent = use the wallet's active chain. */
   chainId?: number;
   raw: string;
 }
@@ -108,11 +112,14 @@ export function parseDeepLink(raw: string): DeepLinkAction {
     return parseLythShorthand(trimmed, raw);
   }
 
-  // 3. EIP-681 `ethereum:` URIs — accept a narrow subset (address-only and
-  //    `address?value=`) so users who scan a generic Ethereum QR can still
-  //    fund a send. Token-transfer ABI calls (`/transfer?...`) deferred.
+  // 3. EIP-681 `ethereum:` URIs are not a Monolythium v4.1 public address
+  //    surface. Reject them instead of silently coercing raw 0x recipients.
   if (trimmed.toLowerCase().startsWith("ethereum:")) {
-    return parseEthereumEip681(trimmed, raw);
+    return {
+      kind: "unknown",
+      reason: "ethereum: raw 0x addresses are retired; use a typed monolythium send link",
+      raw,
+    };
   }
 
   // 4. `monolythium://...` — the wallet's own scheme, parsed via URL.
@@ -120,9 +127,13 @@ export function parseDeepLink(raw: string): DeepLinkAction {
     return parseMonolythiumScheme(trimmed, raw);
   }
 
-  // 5. Bare 0x-prefixed address — common QR encoding for "share my address".
+  // 5. Bare 0x-prefixed addresses are retired at public wallet surfaces.
   if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
-    return { kind: "send", to: trimmed, raw };
+    return {
+      kind: "unknown",
+      reason: "raw 0x addresses are retired; use a typed mono1 address",
+      raw,
+    };
   }
 
   return { kind: "unknown", reason: "unrecognised scheme", raw };
@@ -150,14 +161,12 @@ function parseMonolythiumScheme(input: string, raw: string): DeepLinkAction {
     case "send": {
       const to = params.get("to");
       if (!to) return { kind: "unknown", reason: "send: missing to", raw };
-      return {
-        kind: "send",
-        to,
+      return buildSendAction(to, {
         value: params.get("value") ?? undefined,
         token: params.get("token") ?? undefined,
         chainId: optInt(params.get("chainId")),
         raw,
-      };
+      });
     }
     case "stake": {
       const cluster = params.get("cluster") ?? undefined;
@@ -220,37 +229,66 @@ function parseLythShorthand(input: string, raw: string): SendAction | UnknownAct
   const addr = qIdx === -1 ? stripped : stripped.slice(0, qIdx);
   if (!addr) return { kind: "unknown", reason: "lyth: missing address", raw };
   const params = qIdx === -1 ? new URLSearchParams() : new URLSearchParams(stripped.slice(qIdx + 1));
-  return {
-    kind: "send",
-    to: addr,
+  return buildSendAction(addr, {
     value: params.get("value") ?? undefined,
     token: params.get("token") ?? undefined,
     chainId: optInt(params.get("chainId")),
     raw,
+  });
+}
+
+function buildSendAction(
+  to: string,
+  opts: { value?: string; token?: string; chainId?: number; raw: string },
+): SendAction | UnknownAction {
+  let typedTo: string;
+  try {
+    typedTo = requireDeepLinkAddress(to, "user", "send.to");
+  } catch (err) {
+    return {
+      kind: "unknown",
+      reason: err instanceof Error ? err.message : String(err),
+      raw: opts.raw,
+    };
+  }
+
+  let typedToken: string | undefined;
+  if (opts.token !== undefined) {
+    try {
+      typedToken = requireDeepLinkAddress(opts.token, "contract", "send.token");
+    } catch (err) {
+      return {
+        kind: "unknown",
+        reason: err instanceof Error ? err.message : String(err),
+        raw: opts.raw,
+      };
+    }
+  }
+
+  return {
+    kind: "send",
+    to: typedTo,
+    value: opts.value,
+    token: typedToken,
+    chainId: opts.chainId,
+    raw: opts.raw,
   };
 }
 
-function parseEthereumEip681(input: string, raw: string): SendAction | UnknownAction {
-  // EIP-681 minimal: `ethereum:<address>[@chainId][?value=..&...]`
-  const stripped = input.slice("ethereum:".length);
-  const qIdx = stripped.indexOf("?");
-  const head = qIdx === -1 ? stripped : stripped.slice(0, qIdx);
-  // Drop any `/<function>` suffix (we don't model token transfers here).
-  const headBare = head.split("/")[0]!;
-  const [addrRaw, chainPart] = headBare.split("@");
-  const addr = addrRaw ?? "";
-  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
-    return { kind: "unknown", reason: "ethereum: invalid address", raw };
+function requireDeepLinkAddress(address: string, expectedKind: AddressKind, label: string): string {
+  if (address.startsWith("0x") || address.startsWith("0X")) {
+    throw new Error(
+      `${label} raw 0x addresses are retired; use typed ${ADDRESS_KIND_HRPS[expectedKind]} bech32m addresses`,
+    );
   }
-  const params = qIdx === -1 ? new URLSearchParams() : new URLSearchParams(stripped.slice(qIdx + 1));
-  return {
-    kind: "send",
-    to: addr,
-    value: params.get("value") ?? undefined,
-    token: undefined,
-    chainId: optInt(chainPart) ?? optInt(params.get("chainId")),
-    raw,
-  };
+  try {
+    return typedBech32ToAddress(address, expectedKind).address;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${label} must be typed ${ADDRESS_KIND_HRPS[expectedKind]} bech32m address: ${message}`,
+    );
+  }
 }
 
 function validateWcUri(uri: string): boolean {
