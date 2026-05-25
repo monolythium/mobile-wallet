@@ -181,7 +181,7 @@ export function QrScanner({ onResult, onClose }: Props) {
             if (e.key === "Enter") submitPaste();
           }}
           className="mw-scanner__paste-input"
-          placeholder="monolythium://send?to=0x… · wc:… · 0x…"
+          placeholder="monolythium://send?to=mono1… · wc:…"
           aria-label="Paste wallet link"
         />
         <button
