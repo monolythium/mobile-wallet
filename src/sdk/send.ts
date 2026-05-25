@@ -17,13 +17,17 @@
 // devnet), we surface that as an error instead of composing an ambiguous tx.
 
 import type { TransactionRequest } from "ethers";
-import { parseLythToLythoshi, type MonolythiumSigner } from "@monolythium/core-sdk";
+import {
+  parseLythToLythoshi,
+  typedBech32ToAddress,
+} from "@monolythium/core-sdk";
+import type { MonolythiumSigner } from "@monolythium/core-sdk/ethers";
 import { getProvider } from "./client";
 
 export interface SendLythArgs {
-  /** EIP-55 lowercase address to debit. Must match the signer's address. */
+  /** Typed ADR-0038 user address to debit. Must match the signer's address. */
   from: string;
-  /** EIP-55 lowercase recipient. */
+  /** Typed ADR-0038 user recipient. */
   to: string;
   /** Decimal LYTH string, e.g. "12.5"; parsed as 8-decimal native lythoshi. */
   amountLyth: string;
@@ -58,11 +62,13 @@ export async function sendLyth(
   signer: MonolythiumSigner,
   args: SendLythArgs,
 ): Promise<SendLythResult> {
+  const fromHex = requireTypedUserAddressHex(args.from, "from");
+  const toHex = requireTypedUserAddressHex(args.to, "to");
   const provider = getProvider();
 
   // 1. Sender nonce + native fee data + chain id, in parallel.
   const [nonce, feeData, network] = await Promise.all([
-    provider.getTransactionCount(args.from, "pending"),
+    provider.getTransactionCount(fromHex, "pending"),
     provider.getFeeData(),
     provider.getNetwork(),
   ]);
@@ -81,8 +87,8 @@ export async function sendLyth(
     type: 2, // EIP-1559
     chainId,
     nonce,
-    from: args.from,
-    to: args.to,
+    from: fromHex,
+    to: toHex,
     value: parseLythToLythoshi(args.amountLyth),
     data: args.data ?? "0x",
     gasLimit: executionUnitLimit,
@@ -104,4 +110,16 @@ export async function sendLyth(
     rawSigned,
     request,
   };
+}
+
+function requireTypedUserAddressHex(address: string, label: string): string {
+  if (address.startsWith("0x") || address.startsWith("0X")) {
+    throw new Error(`${label} raw 0x addresses are retired; use a typed mono1 address`);
+  }
+  try {
+    return typedBech32ToAddress(address, "user").hex;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`${label} must be a typed mono1 address: ${message}`);
+  }
 }

@@ -85,9 +85,9 @@ export interface VaultEnvelope {
   payloadIv: string; // base64
   payload: string; // base64
   /**
-   * The public EIP-55 lowercase address bound to this vault, surfaced
-   * in plaintext so the UI can render the bound identity without
-   * triggering a biometric prompt at app boot. The address is public
+   * Internal 0x address bound to this vault, surfaced in plaintext so
+   * the UI can render the typed mono1 identity without triggering a
+   * biometric prompt at app boot. The address bytes are public
    * information; the private key stays inside `payload`.
    */
   address: string;
@@ -109,7 +109,7 @@ export interface VaultPayload {
   createdAt: number; // unix seconds
   /** 32-byte secp256k1 private key, hex-encoded (no `0x` prefix). */
   secp256k1Priv: string;
-  /** EIP-55 lowercase address derived from the private key. */
+  /** Internal 0x address derived from the private key. */
   address: string;
 }
 
@@ -280,9 +280,9 @@ export async function vaultExists(): Promise<boolean> {
 }
 
 /**
- * Public address bound to the vault, read straight from the envelope's
+ * Internal 0x address bound to the vault, read straight from the envelope's
  * plaintext header. Returns `null` if the vault hasn't been bootstrapped.
- * No biometric prompt, no decryption — the address is public info.
+ * No biometric prompt, no decryption — public UI converts this to mono1.
  *
  * Older vaults (bootstrapped before the `address` envelope field landed)
  * report `null`; the UI surfaces a "wallet identity loading…" pane and

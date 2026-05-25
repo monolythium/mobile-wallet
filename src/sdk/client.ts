@@ -13,11 +13,13 @@
 
 import {
   LYTHOSHI_PER_LYTH,
-  MonolythiumProvider,
   SdkError,
   getRpcEndpoints,
 } from "@monolythium/core-sdk";
-import type { MonolythiumProviderOptions } from "@monolythium/core-sdk";
+import {
+  MonolythiumProvider,
+  type MonolythiumProviderOptions,
+} from "@monolythium/core-sdk/ethers";
 
 /**
  * Default RPC endpoint. Honors `VITE_MONO_RPC_URL` at build time so a

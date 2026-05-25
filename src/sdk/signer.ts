@@ -34,7 +34,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   MonolythiumSigner,
   type MonolythiumSignerBackend,
-} from "@monolythium/core-sdk";
+} from "@monolythium/core-sdk/ethers";
 import {
   Wallet,
   type Provider,
@@ -61,7 +61,7 @@ export type VaultUnlock = () => Promise<VaultPayload>;
 interface BiometricSignerArgs {
   /** Resolves to the decrypted vault payload — see `VaultUnlock`. */
   unlock: VaultUnlock;
-  /** EIP-55 lowercase address the vault payload was bootstrapped to. */
+  /** Internal 0x address the vault payload was bootstrapped to. */
   address: string;
   provider?: Provider | null;
 }

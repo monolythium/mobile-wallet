@@ -21,11 +21,14 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { Wallet, keccak256 } from "ethers";
 import {
   MONOLYTHIUM_TESTNET_CHAIN_ID,
-  MonolythiumProvider,
-  MonolythiumSigner,
   RpcClient,
+  addressToTypedBech32,
   parseLythToLythoshi,
 } from "@monolythium/core-sdk";
+import {
+  MonolythiumProvider,
+  MonolythiumSigner,
+} from "@monolythium/core-sdk/ethers";
 import { sendLyth } from "../send";
 import { resetProviderForTest, setProviderForTest } from "../client";
 
@@ -37,6 +40,9 @@ import { resetProviderForTest, setProviderForTest } from "../client";
  */
 const TEST_PRIVKEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const DEAD_ADDRESS = "0x000000000000000000000000000000000000dead";
+const DEAD_TYPED = addressToTypedBech32("user", DEAD_ADDRESS);
+const DEAD_CONTRACT_TYPED = addressToTypedBech32("contract", DEAD_ADDRESS);
 
 interface CapturedCall {
   method: string;
@@ -171,11 +177,12 @@ describe("sendLyth", () => {
     // not the keys. ethers' signTransaction produces a real RLP that
     // any node would accept (modulo balance/state).
     const wallet = new Wallet(TEST_PRIVKEY);
+    const walletTyped = addressToTypedBech32("user", wallet.address);
     const signer = MonolythiumSigner.fromEthersWallet(wallet, provider);
 
     const result = await sendLyth(signer, {
-      from: wallet.address,
-      to: "0x000000000000000000000000000000000000dead",
+      from: walletTyped,
+      to: DEAD_TYPED,
       amountLyth: "0.001",
     });
 
@@ -200,10 +207,74 @@ describe("sendLyth", () => {
     // testnet chain id.
     expect(result.request.type).toBe(2);
     expect(result.request.chainId).toBe(MONOLYTHIUM_TESTNET_CHAIN_ID);
+    expect(result.request.from).toBe(wallet.address.toLowerCase());
+    expect(result.request.to).toBe(DEAD_ADDRESS);
     expect(result.request.value).toBe(parseLythToLythoshi("0.001"));
     expect(result.request.gasLimit).toBe(21_000n);
     expect(result.request.maxFeePerGas).toBeDefined();
     expect(result.request.maxPriorityFeePerGas).toBeDefined();
+  });
+
+  it("rejects raw 0x sender addresses before fetching chain state", async () => {
+    const fetchStub = buildMockFetch(state);
+    const provider = new MonolythiumProvider(
+      new RpcClient("http://test.invalid", { fetch: fetchStub }),
+    );
+    setProviderForTest(provider);
+
+    const wallet = new Wallet(TEST_PRIVKEY);
+    const signer = MonolythiumSigner.fromEthersWallet(wallet, provider);
+
+    await expect(
+      sendLyth(signer, {
+        from: wallet.address,
+        to: DEAD_TYPED,
+        amountLyth: "0.001",
+      }),
+    ).rejects.toThrow(/from raw 0x addresses are retired/);
+    expect(state.observed).toHaveLength(0);
+  });
+
+  it("rejects raw 0x recipient addresses before fetching chain state", async () => {
+    const fetchStub = buildMockFetch(state);
+    const provider = new MonolythiumProvider(
+      new RpcClient("http://test.invalid", { fetch: fetchStub }),
+    );
+    setProviderForTest(provider);
+
+    const wallet = new Wallet(TEST_PRIVKEY);
+    const walletTyped = addressToTypedBech32("user", wallet.address);
+    const signer = MonolythiumSigner.fromEthersWallet(wallet, provider);
+
+    await expect(
+      sendLyth(signer, {
+        from: walletTyped,
+        to: DEAD_ADDRESS,
+        amountLyth: "0.001",
+      }),
+    ).rejects.toThrow(/to raw 0x addresses are retired/);
+    expect(state.observed).toHaveLength(0);
+  });
+
+  it("rejects non-user recipient HRPs before fetching chain state", async () => {
+    const fetchStub = buildMockFetch(state);
+    const provider = new MonolythiumProvider(
+      new RpcClient("http://test.invalid", { fetch: fetchStub }),
+    );
+    setProviderForTest(provider);
+
+    const wallet = new Wallet(TEST_PRIVKEY);
+    const walletTyped = addressToTypedBech32("user", wallet.address);
+    const signer = MonolythiumSigner.fromEthersWallet(wallet, provider);
+
+    await expect(
+      sendLyth(signer, {
+        from: walletTyped,
+        to: DEAD_CONTRACT_TYPED,
+        amountLyth: "0.001",
+      }),
+    ).rejects.toThrow(/to must be a typed mono1 address/);
+    expect(state.observed).toHaveLength(0);
   });
 
   it("throws when the node has no native execution fee data", async () => {
@@ -275,11 +346,12 @@ describe("sendLyth", () => {
     );
     setProviderForTest(provider);
     const wallet = new Wallet(TEST_PRIVKEY);
+    const walletTyped = addressToTypedBech32("user", wallet.address);
     const signer = MonolythiumSigner.fromEthersWallet(wallet, provider);
     await expect(
       sendLyth(signer, {
-        from: wallet.address,
-        to: "0x000000000000000000000000000000000000dead",
+        from: walletTyped,
+        to: DEAD_TYPED,
         amountLyth: "0.001",
       }),
     ).rejects.toThrow(/native execution fee data/);
