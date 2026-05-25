@@ -6,21 +6,18 @@
 // state; this module owns "what does Send actually do on the wire."
 //
 // Stages of a real send:
-//   1. read sender nonce + fee data from the provider (no key access yet);
-//   2. build an EIP-1559 TransactionRequest with explicit gas limits;
+//   1. read sender nonce + native fee data from the provider (no key access yet);
+//   2. build an ethers TransactionRequest with an explicit execution-unit limit;
 //   3. ask the signer for a fully-signed RLP (biometric flow unlocks the
 //      vault, decrypts the secp256k1 key, and signs in-memory);
 //   4. broadcastTransaction via the provider; the SDK transport carries it.
 //
-// We deliberately do NOT swap to legacy txs even when the provider's
-// `feeData()` reports a zero `maxFeePerGas` — Monolythium v4.0 is
-// EIP-1559-only at the wire level. If the node doesn't surface fee data
-// (sandbox / fresh devnet), we surface that as an error instead of
-// falling back to a legacy tx the chain wouldn't accept.
+// We keep the ethers-compatible type-2 envelope while the SDK signer expects
+// that shape. If the node does not surface native fee data (sandbox / fresh
+// devnet), we surface that as an error instead of composing an ambiguous tx.
 
-import { parseEther } from "ethers";
 import type { TransactionRequest } from "ethers";
-import type { MonolythiumSigner } from "@monolythium/core-sdk";
+import { parseLythToLythoshi, type MonolythiumSigner } from "@monolythium/core-sdk";
 import { getProvider } from "./client";
 
 export interface SendLythArgs {
@@ -28,17 +25,17 @@ export interface SendLythArgs {
   from: string;
   /** EIP-55 lowercase recipient. */
   to: string;
-  /** Decimal LYTH string, e.g. "12.5". 1 LYTH = 1e18 wei. */
+  /** Decimal LYTH string, e.g. "12.5"; parsed as 8-decimal native lythoshi. */
   amountLyth: string;
-  /** Optional gas limit override (default 21_000 for a plain transfer). */
-  gasLimit?: bigint;
+  /** Optional execution-unit limit override (default 21_000 for a plain transfer). */
+  executionUnitLimit?: bigint;
   /**
    * Optional explicit chain id. When omitted we use whatever the
    * provider's `getNetwork()` returns — the right answer for the happy
    * path and avoids drift if a future stage wires multi-network support.
    */
   chainId?: bigint;
-  /** Optional ETH-style data payload — most plain transfers leave this empty. */
+  /** Optional hex data payload; most plain transfers leave this empty. */
   data?: string;
 }
 
@@ -63,7 +60,7 @@ export async function sendLyth(
 ): Promise<SendLythResult> {
   const provider = getProvider();
 
-  // 1. Sender nonce + fee data + chain id, in parallel.
+  // 1. Sender nonce + native fee data + chain id, in parallel.
   const [nonce, feeData, network] = await Promise.all([
     provider.getTransactionCount(args.from, "pending"),
     provider.getFeeData(),
@@ -72,22 +69,23 @@ export async function sendLyth(
 
   if (feeData.maxFeePerGas === null || feeData.maxPriorityFeePerGas === null) {
     throw new Error(
-      "node did not surface EIP-1559 fee data (maxFeePerGas / maxPriorityFeePerGas) — check that the node implements eth_feeHistory",
+      "node did not surface native execution fee data; check that the RPC endpoint implements fee-history support",
     );
   }
 
   const chainId = args.chainId ?? network.chainId;
+  const executionUnitLimit = args.executionUnitLimit ?? 21_000n;
 
-  // 2. Build the EIP-1559 TransactionRequest.
+  // 2. Build the ethers-compatible TransactionRequest.
   const request: TransactionRequest = {
     type: 2, // EIP-1559
     chainId,
     nonce,
     from: args.from,
     to: args.to,
-    value: parseEther(args.amountLyth),
+    value: parseLythToLythoshi(args.amountLyth),
     data: args.data ?? "0x",
-    gasLimit: args.gasLimit ?? 21_000n,
+    gasLimit: executionUnitLimit,
     maxFeePerGas: feeData.maxFeePerGas,
     maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
   };

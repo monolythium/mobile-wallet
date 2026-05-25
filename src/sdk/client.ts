@@ -11,7 +11,12 @@
 // `mono-core-sdk` is the single seam — screens never construct an
 // `RpcClient` directly (per workspace CLAUDE §6).
 
-import { MonolythiumProvider, SdkError, getRpcEndpoints } from "@monolythium/core-sdk";
+import {
+  LYTHOSHI_PER_LYTH,
+  MonolythiumProvider,
+  SdkError,
+  getRpcEndpoints,
+} from "@monolythium/core-sdk";
 import type { MonolythiumProviderOptions } from "@monolythium/core-sdk";
 
 /**
@@ -109,10 +114,10 @@ export interface ChainSnapshot {
   endpoint: string;
   chainId: bigint;
   blockHeight: bigint | null;
-  /** Decimal LYTH as a JS number; for display only (1 LYTH = 1e18 wei). */
+  /** Decimal LYTH as a JS number; for display only (1 LYTH = 1e8 lythoshi). */
   balanceLyth: number;
-  /** Raw wei as a `0x`-quantity string straight off the wire. */
-  balanceWei: string;
+  /** Raw lythoshi as a `0x`-quantity string straight off the wire. */
+  balanceLythoshiHex: string;
   /** Stringified for UI consumption; original SdkError preserved if applicable. */
   error: { kind: string; message: string } | null;
 }
@@ -121,18 +126,18 @@ export async function loadChainSnapshot(address: string): Promise<ChainSnapshot>
   const provider = getProvider();
   const endpoint = provider.rpcClient.endpoint;
   try {
-    const [network, blockHeight, balanceWei] = await Promise.all([
+    const [network, blockHeight, balanceLythoshi] = await Promise.all([
       provider.getNetwork(),
       provider.getBlockNumber(),
       provider.getBalance(address),
     ]);
-    const wei = `0x${balanceWei.toString(16)}`;
+    const lythoshiHex = `0x${balanceLythoshi.toString(16)}`;
     return {
       endpoint,
       chainId: network.chainId,
       blockHeight: BigInt(blockHeight),
-      balanceWei: wei,
-      balanceLyth: weiToLyth(wei),
+      balanceLythoshiHex: lythoshiHex,
+      balanceLyth: lythoshiHexToLyth(lythoshiHex),
       error: null,
     };
   } catch (cause) {
@@ -140,7 +145,7 @@ export async function loadChainSnapshot(address: string): Promise<ChainSnapshot>
       endpoint,
       chainId: 0n,
       blockHeight: null,
-      balanceWei: "0x0",
+      balanceLythoshiHex: "0x0",
       balanceLyth: 0,
       error: unwrapError(cause),
     };
@@ -166,16 +171,16 @@ function unwrapError(cause: unknown): { kind: string; message: string } {
   return { kind: "unknown", message };
 }
 
-/** Convert a `0x`-quantity wei string to a LYTH JS number (1 LYTH = 1e18 wei). */
-export function weiToLyth(hex: string): number {
+/** Convert a `0x`-quantity lythoshi string to a LYTH JS number. */
+export function lythoshiHexToLyth(hex: string): number {
   if (!hex || !hex.startsWith("0x")) return 0;
   const trimmed = hex === "0x" ? "0x0" : hex;
   try {
-    const wei = BigInt(trimmed);
-    if (wei === 0n) return 0;
-    const lythWhole = wei / 1_000_000_000_000_000_000n;
-    const lythFrac = wei % 1_000_000_000_000_000_000n;
-    return Number(lythWhole) + Number(lythFrac) / 1e18;
+    const lythoshi = BigInt(trimmed);
+    if (lythoshi === 0n) return 0;
+    const lythWhole = lythoshi / LYTHOSHI_PER_LYTH;
+    const lythFraction = lythoshi % LYTHOSHI_PER_LYTH;
+    return Number(lythWhole) + Number(lythFraction) / Number(LYTHOSHI_PER_LYTH);
   } catch {
     return 0;
   }

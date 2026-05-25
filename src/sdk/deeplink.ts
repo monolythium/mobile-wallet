@@ -31,7 +31,7 @@ import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 export interface SendAction {
   kind: "send";
   to: string;
-  /** Wei (decimal string). Optional for asset-only deep links. */
+  /** Native base-unit decimal string. Optional for asset-only deep links. */
   value?: string;
   /** ERC-20 contract address. Absent = native LYTH. */
   token?: string;

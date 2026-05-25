@@ -24,6 +24,7 @@ import {
   MonolythiumProvider,
   MonolythiumSigner,
   RpcClient,
+  parseLythToLythoshi,
 } from "@monolythium/core-sdk";
 import { sendLyth } from "../send";
 import { resetProviderForTest, setProviderForTest } from "../client";
@@ -147,7 +148,7 @@ describe("sendLyth", () => {
     state = {
       chainId: MONOLYTHIUM_TESTNET_CHAIN_ID,
       blockNumber: 1024n,
-      baseFee: 1_000_000_000n, // 1 gwei
+      baseFee: 1_000_000_000n, // compatibility base fee sample
       nonce: 7n,
       acceptedRawTxs: [],
       observed: [],
@@ -199,11 +200,13 @@ describe("sendLyth", () => {
     // testnet chain id.
     expect(result.request.type).toBe(2);
     expect(result.request.chainId).toBe(MONOLYTHIUM_TESTNET_CHAIN_ID);
+    expect(result.request.value).toBe(parseLythToLythoshi("0.001"));
+    expect(result.request.gasLimit).toBe(21_000n);
     expect(result.request.maxFeePerGas).toBeDefined();
     expect(result.request.maxPriorityFeePerGas).toBeDefined();
   });
 
-  it("throws when the node has no EIP-1559 fee data", async () => {
+  it("throws when the node has no native execution fee data", async () => {
     // Build a fetch stub that returns null fee fields; ethers' getFeeData
     // surfaces null/null in that case, which our send composer must reject
     // (the chain is EIP-1559-only).
@@ -279,6 +282,6 @@ describe("sendLyth", () => {
         to: "0x000000000000000000000000000000000000dead",
         amountLyth: "0.001",
       }),
-    ).rejects.toThrow(/EIP-1559 fee data/);
+    ).rejects.toThrow(/native execution fee data/);
   });
 });
