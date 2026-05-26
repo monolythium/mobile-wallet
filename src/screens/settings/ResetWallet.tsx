@@ -14,6 +14,7 @@
 
 import { useState } from "react";
 import { clearUnlockSecret } from "../../sdk/auth";
+import { clearAllContacts } from "../../sdk/contacts";
 
 interface Props {
   /** Reset side-effect: parent re-runs `hasUnlockSecret()` and falls
@@ -37,6 +38,9 @@ export function ResetWallet({ onResetComplete, onClose }: Props) {
     setError(null);
     try {
       await clearUnlockSecret();
+      // Best-effort: also wipe the local address book + (in future) the
+      // WC session cache. A reset is a fresh start for this device.
+      await clearAllContacts().catch(() => {});
       onResetComplete();
     } catch (cause) {
       setError((cause as Error)?.message ?? "reset failed");

@@ -5,6 +5,7 @@ import { Icon, type IconName } from "../components/Icon";
 
 export type SettingsRoute =
   | "menu"
+  | "contacts"
   | "reveal-phrase"
   | "reset-wallet"
   | "about";
@@ -22,6 +23,12 @@ interface Row {
 }
 
 const ROWS: Row[] = [
+  {
+    route: "contacts",
+    icon: "wallet",
+    title: "Contacts",
+    subtitle: "Saved recipient addresses",
+  },
   {
     route: "reveal-phrase",
     icon: "key",

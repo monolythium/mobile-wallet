@@ -13,6 +13,7 @@ import {
 } from "@monolythium/core-sdk";
 import type { OperationRequest } from "../components/OperationsDrawer";
 import { getProvider } from "../sdk/client";
+import { bumpContactLastUsed } from "../sdk/contacts";
 import { previewMaxFeeLyth, sendLyth } from "../sdk/send";
 import {
   makeBiometricBackendFactory,
@@ -119,6 +120,10 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
             executionUnitLimit: DEFAULT_LIMIT,
           },
         );
+        // Best-effort: if the recipient is a saved contact, bump
+        // lastUsedAt so the MRU sort surfaces them on next send. No-op
+        // if they aren't in the address book.
+        void bumpContactLastUsed(toBech32m).catch(() => {});
         return result.txHash;
       },
     });
