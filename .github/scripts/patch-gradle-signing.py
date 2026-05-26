@@ -1,83 +1,91 @@
 #!/usr/bin/env python3
 """
-Inject a signingConfigs.release block into the Tauri-generated
-app/build.gradle.kts so the release build picks up keystore.properties.
+Inject release signing into the Tauri-generated app/build.gradle.kts so the
+release build picks up keystore.properties.
 
-Tauri's `android init` ships a debug-only signingConfigs. CI calls this
-after `tauri android init` to add the release config without committing
-gen/android (which is gitignored and host-specific).
+Idempotent. Compatible with Tauri 2's android init output that already
+imports java.util.Properties and has a tauriProperties block. Uses
+brace-counting rather than greedy regexes so nested braces inside
+Properties().apply { ... } don't trip the patch.
 """
 from __future__ import annotations
-import sys, re
+import sys
 from pathlib import Path
 
 GRADLE = Path(sys.argv[1])
 src = GRADLE.read_text()
+lines = src.splitlines(keepends=True)
 
-if "keystore.properties" in src:
-    print("already patched, nothing to do")
+if "keystoreProperties" in src:
+    print("already patched")
     sys.exit(0)
 
-# 1. Insert loader at the top, after the plugins block
-loader_block = """
-import java.util.Properties
-import java.io.FileInputStream
 
-val keystorePropertiesFile = rootProject.file("keystore.properties")
-val keystoreProperties = Properties()
-if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+def find_block_end(start_line_idx: int) -> int:
+    """Given a line index that contains an opening { (the val tauriProperties =
+    Properties().apply { line), return the index of the line containing the
+    matching }."""
+    depth = 0
+    seen_open = False
+    for i in range(start_line_idx, len(lines)):
+        for ch in lines[i]:
+            if ch == "{":
+                depth += 1
+                seen_open = True
+            elif ch == "}":
+                depth -= 1
+                if seen_open and depth == 0:
+                    return i
+    raise RuntimeError("unbalanced braces")
+
+
+# 1. Find the tauriProperties block's closing brace
+tauri_start = next(
+    i for i, line in enumerate(lines)
+    if "val tauriProperties = Properties().apply" in line
+)
+tauri_end = find_block_end(tauri_start)
+
+# 2. Insert keystoreProperties block right after tauriProperties' closing brace
+KEYSTORE_BLOCK = """
+val keystoreProperties = Properties().apply {
+    val propFile = rootProject.file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
 }
 """
+lines.insert(tauri_end + 1, KEYSTORE_BLOCK)
 
-src2, n = re.subn(
-    r"(plugins\s*\{[^}]*\}\s*)",
-    r"\1\n" + loader_block + "\n",
-    src,
-    count=1,
-)
-if n == 0:
-    print("ERROR: could not find plugins {} block", file=sys.stderr)
-    sys.exit(1)
-src = src2
-
-# 2. Add signingConfigs.release { ... } inside the android {} block.
-signing_block = """
+# 3. Insert signingConfigs.release { ... } right after `android {`
+SIGNING_BLOCK = """    signingConfigs {
         create("release") {
+            val storeFileName = keystoreProperties["storeFile"] as String?
+            if (storeFileName != null) {
+                storeFile = rootProject.file(storeFileName)
+            }
+            storePassword = keystoreProperties["storePassword"] as String? ?: ""
             keyAlias = keystoreProperties["keyAlias"] as String? ?: ""
             keyPassword = keystoreProperties["keyPassword"] as String? ?: ""
-            storeFile = keystoreProperties["storeFile"]?.let { rootProject.file(it as String) }
-            storePassword = keystoreProperties["storePassword"] as String? ?: ""
         }
+    }
 """
+android_start = next(
+    i for i, line in enumerate(lines)
+    if line.strip().startswith("android {") or line.strip() == "android {"
+)
+lines.insert(android_start + 1, SIGNING_BLOCK)
 
-# Add inside the existing signingConfigs {} block if present, otherwise create one.
-if re.search(r"signingConfigs\s*\{", src):
-    src = re.sub(
-        r"(signingConfigs\s*\{\s*)",
-        r"\1" + signing_block + "\n",
-        src,
-        count=1,
-    )
+# 4. Wire signingConfig into the release buildType
+for i, line in enumerate(lines):
+    if 'getByName("release")' in line and "{" in line:
+        # Insert signingConfig assignment on the next line, with matching indent
+        indent = " " * (len(line) - len(line.lstrip()) + 4)
+        lines.insert(i + 1, f'{indent}signingConfig = signingConfigs.getByName("release")\n')
+        break
 else:
-    src = re.sub(
-        r"(android\s*\{\s*)",
-        r"\1\n    signingConfigs {\n" + signing_block + "    }\n",
-        src,
-        count=1,
-    )
+    print("ERROR: could not find buildTypes.release", file=sys.stderr)
+    sys.exit(1)
 
-# 3. Wire the release buildType to the release signingConfig.
-if re.search(r"buildTypes\s*\{[^}]*release\s*\{[^}]*signingConfig", src, re.DOTALL):
-    pass  # already wired
-else:
-    src = re.sub(
-        r"(buildTypes\s*\{\s*[^}]*?release\s*\{\s*)",
-        r"\1signingConfig = signingConfigs.getByName(\"release\")\n            ",
-        src,
-        count=1,
-        flags=re.DOTALL,
-    )
-
-GRADLE.write_text(src)
+GRADLE.write_text("".join(lines))
 print(f"patched {GRADLE}")
