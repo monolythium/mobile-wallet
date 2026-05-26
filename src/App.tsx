@@ -36,6 +36,12 @@ import { Ask } from "./screens/Ask";
 import { Onboarding } from "./screens/Onboarding";
 import { QrScanner } from "./screens/QrScanner";
 import { Sessions } from "./screens/Sessions";
+import { Send } from "./screens/Send";
+import { Receive } from "./screens/Receive";
+import { Settings, type SettingsRoute } from "./screens/Settings";
+import { RevealPhrase } from "./screens/settings/RevealPhrase";
+import { ResetWallet } from "./screens/settings/ResetWallet";
+import { About } from "./screens/settings/About";
 import { fetchChainStatus, type ChainStatus } from "./sdk/client";
 import {
   buildOfflineWalletReadiness,
@@ -67,7 +73,15 @@ const TABS: { k: Tab; label: string; icon: IconName }[] = [
   { k: "more", label: "More", icon: "more" },
 ];
 
-type MoreScreen = "menu" | "keys" | "audit" | "sessions";
+type MoreScreen =
+  | "menu"
+  | "keys"
+  | "audit"
+  | "sessions"
+  | "settings"
+  | "settings/reveal-phrase"
+  | "settings/reset-wallet"
+  | "settings/about";
 
 type OnboardingState = "checking" | "needed" | "complete";
 
@@ -77,6 +91,8 @@ export default function App() {
   const [operation, setOperation] = useState<OperationRequest | null>(null);
   const [wcSubject, setWcSubject] = useState<WcSheetSubject | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
+  const [receiveOpen, setReceiveOpen] = useState(false);
   const [status, setStatus] = useState<ChainStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<WalletReadiness | null>(null);
@@ -339,7 +355,21 @@ export default function App() {
           tab === "more" && more !== "menu" ? (
             <button
               className="mw-iconbtn"
-              onClick={() => setMore("menu")}
+              onClick={() => {
+                if (more.startsWith("settings/")) setMore("settings");
+                else setMore("menu");
+              }}
+              aria-label="Back"
+            >
+              <Icon name="back" />
+            </button>
+          ) : tab === "home" && (sendOpen || receiveOpen) ? (
+            <button
+              className="mw-iconbtn"
+              onClick={() => {
+                setSendOpen(false);
+                setReceiveOpen(false);
+              }}
               aria-label="Back"
             >
               <Icon name="back" />
@@ -347,7 +377,7 @@ export default function App() {
           ) : undefined
         }
         trailing={
-          tab !== "more" ? (
+          tab !== "more" && !sendOpen && !receiveOpen ? (
             <button
               className="mw-iconbtn"
               onClick={openScanner}
@@ -359,14 +389,29 @@ export default function App() {
         }
       />
 
-      {tab === "home" && (
+      {tab === "home" && !sendOpen && !receiveOpen && (
         <Home
           status={status}
           statusError={statusError}
           readiness={readiness}
           selfAddress={selfAddress}
           openOperation={openOperation}
+          openSend={() => setSendOpen(true)}
+          openReceive={() => setReceiveOpen(true)}
           onScan={openScanner}
+        />
+      )}
+      {tab === "home" && sendOpen && selfAddress && (
+        <Send
+          selfAddress={selfAddress}
+          openOperation={openOperation}
+          onClose={() => setSendOpen(false)}
+        />
+      )}
+      {tab === "home" && receiveOpen && selfAddress && (
+        <Receive
+          selfAddress={selfAddress}
+          onClose={() => setReceiveOpen(false)}
         />
       )}
       {tab === "operator" && <Operator />}
@@ -378,6 +423,33 @@ export default function App() {
       {tab === "more" && more === "sessions" && (
         <Sessions onAddSession={openScanner} />
       )}
+      {tab === "more" && more === "settings" && (
+        <Settings
+          go={(route: SettingsRoute) => {
+            if (route === "menu") setMore("settings");
+            else setMore(`settings/${route}` as MoreScreen);
+          }}
+        />
+      )}
+      {tab === "more" && more === "settings/reveal-phrase" && (
+        <RevealPhrase onClose={() => setMore("settings")} />
+      )}
+      {tab === "more" && more === "settings/reset-wallet" && (
+        <ResetWallet
+          onResetComplete={() => {
+            setMore("menu");
+            setOnboarding("needed");
+            setSelfAddress(null);
+            setStatus(null);
+            setStatusError(null);
+            setReadiness(null);
+          }}
+          onClose={() => setMore("settings")}
+        />
+      )}
+      {tab === "more" && more === "settings/about" && (
+        <About onClose={() => setMore("settings")} />
+      )}
 
       {!operation && !wcSubject && !scannerOpen && (
         <nav className="mw-tabbar" aria-label="Primary">
@@ -388,6 +460,8 @@ export default function App() {
               onClick={() => {
                 setTab(t.k);
                 if (t.k === "more") setMore("menu");
+                setSendOpen(false);
+                setReceiveOpen(false);
               }}
               aria-current={tab === t.k ? "page" : undefined}
             >
@@ -495,13 +569,26 @@ function MoreMenu({ setMore }: { setMore: (s: MoreScreen) => void }) {
 
       <div className="mw-card">
         <div className="mw-card__head">
-          <h3>About</h3>
+          <h3>Wallet</h3>
         </div>
-        <p style={{ margin: 0, fontSize: 12.5, color: "var(--fg-300)", lineHeight: 1.55 }}>
-          Monolythium Wallet · scaffold v0.0.1 (Stage 4). Native iOS / Android
-          targets land once Xcode and Android Studio are configured on the
-          build host.
-        </p>
+        <button
+          className="mw-row"
+          style={{ width: "100%", textAlign: "left" }}
+          onClick={() => setMore("settings")}
+        >
+          <div className="mw-row__icon">
+            <Icon name="settings" size={14} />
+          </div>
+          <div>
+            <div className="mw-row__name">Settings</div>
+            <div className="mw-row__sub">
+              Recovery phrase · Reset · About
+            </div>
+          </div>
+          <div className="mw-row__right">
+            <Icon name="chev" size={14} />
+          </div>
+        </button>
       </div>
     </div>
   );
@@ -521,6 +608,10 @@ function tabTitle(tab: Tab, more: MoreScreen): string {
       if (more === "keys") return "Keys";
       if (more === "audit") return "Audit";
       if (more === "sessions") return "WalletConnect";
+      if (more === "settings") return "Settings";
+      if (more === "settings/reveal-phrase") return "Recovery phrase";
+      if (more === "settings/reset-wallet") return "Reset wallet";
+      if (more === "settings/about") return "About";
       return "More";
   }
 }
