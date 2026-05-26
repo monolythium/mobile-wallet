@@ -21,6 +21,7 @@
   "dependencies": {
     "@monolythium/core-sdk": "file:../mono-core-sdk/packages/ts",
     "@noble/hashes": "^2.2.0",
+    "@scure/bip39": "^2.2.0",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-deep-link": "^2.4.8",
     "@tauri-apps/plugin-store": "^2.4.2",
@@ -29,6 +30,7 @@
     "@walletconnect/utils": "^2.23.9",
     "@zxing/browser": "^0.1.5",
     "@zxing/library": "^0.21.3",
+    "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

@@ -1,32 +1,37 @@
-// Stage 4 vault layer — KDF-derived KEK + on-disk encrypted envelope.
+// PQM-1 vault layer — KDF-derived KEK + on-disk encrypted envelope, with
+// a 24-word PQM-1 mnemonic as the sealed payload. ML-DSA-65 keys are
+// derived from the mnemonic on every unlock — the wallet never holds a
+// raw signing key on disk.
 //
-// Storage layout (per Stage 4 spec in `../plans/mobile-wallet.md`):
+// Storage layout:
 //
 //   keystore (slot "wallet.unlock"):
 //     device-key     — 32 random bytes (hex), biometric-gated by the OS.
 //
-//   disk (`<app data>/vault.v1.json`):
+//   disk (`<app data>/vault.v2.json`):
 //     {
-//       version: 1,
+//       version: 2,
 //       params:  { algo: "argon2id", v: 0x13, t: 2, m: 32768, p: 1, dkLen: 32 },
 //       salt:           base64(16 bytes),
-//       kekWrapIv:      base64(12 bytes),  // AES-GCM nonce for kekWrap
-//       kekWrap:        base64(ciphertext) // AES-GCM(device-key, KEK)
-//       payloadIv:      base64(12 bytes),  // AES-GCM nonce for payload
-//       payload:        base64(ciphertext) // AES-GCM(KEK, vault payload JSON)
+//       kekWrapIv:      base64(12 bytes),
+//       kekWrap:        base64(AES-GCM(device-key, KEK)),
+//       payloadIv:      base64(12 bytes),
+//       payload:        base64(AES-GCM(KEK, JSON.stringify(VaultPayload))),
+//       address:        hex(20 bytes)  // plaintext header for boot-time UI
 //     }
 //
-// Three onboarded paths:
+// Three onboarded paths (unchanged from the secp256k1 era):
 //
 //   1. Onboarding (`bootstrap`):
 //        device-key  := random(32)
 //        salt        := random(16)
+//        mnemonic    := SDK generatePqm1Mnemonic()
 //        KEK         := argon2id(password, salt, params)
 //        kekWrap     := AES-GCM(device-key, KEK)
-//        ciphertext  := AES-GCM(KEK, JSON.stringify(payload))
+//        ciphertext  := AES-GCM(KEK, JSON.stringify({ pqm1Mnemonic, address }))
 //        keystore.set(device-key); disk.write(envelope)
 //
-//   2. Biometric unlock (`unlockWithBiometric`):
+//   2. Biometric unlock (`unlockWithDeviceKey`):
 //        biometric prompt (in caller) -> keystore.get() -> device-key
 //        envelope    := disk.read()
 //        KEK         := AES-GCM-decrypt(device-key, envelope.kekWrap)
@@ -37,15 +42,28 @@
 //        KEK         := argon2id(password, envelope.salt, envelope.params)
 //        payload     := AES-GCM-decrypt(KEK, envelope.payload)  // throws on bad password
 //
-// Argon2id parameters (mobile-friendly per Stage 4 spec):
-//   m = 32 MiB (32 * 1024 = 32768 KiB), t = 2, p = 1, dkLen = 32.
-//   These are at the lower end of OWASP's recommended range — Tauri webview
-//   on older iPhones / mid-tier Android can spike CPU under heavier params.
-//   Re-tune in `KDF_PARAMS` if profiling shows headroom.
+// Argon2id parameters (mobile-friendly):
+//   m = 32 MiB, t = 2, p = 1, dkLen = 32. Lower end of OWASP's
+//   recommended range — Tauri webview on older iPhones / mid-tier
+//   Android can spike CPU under heavier params. Re-tune in
+//   `KDF_PARAMS` if profiling shows headroom.
+//
+// PQM-1 algo tag is `0x01` (ML-DSA-65). Import paths MUST verify the
+// algo tag before deriving — non-`0x01` payloads are rejected with a
+// typed error so a wallet built for MlDsa65 doesn't silently accept a
+// future algorithm's mnemonic.
 
 import { invoke } from "@tauri-apps/api/core";
 import { argon2idAsync } from "@noble/hashes/argon2.js";
-import { Wallet } from "ethers";
+import {
+  PQM1_ALGO_TAG_MLDSA65,
+  PQM1_VERSION_V1,
+  Pqm1Error,
+  generatePqm1Mnemonic,
+  pqm1MnemonicToAddress,
+  pqm1MnemonicToPayload,
+} from "@monolythium/core-sdk/crypto";
+import { typedBech32ToAddress } from "@monolythium/core-sdk";
 
 /**
  * Argon2id KDF parameters. Bumping any of these is a vault re-encryption —
@@ -76,8 +94,11 @@ export const KDF_PARAMS: KdfParams = {
   dkLen: 32,
 };
 
+/** Current vault envelope version. v2 = PQM-1 mnemonic payload. */
+export const VAULT_VERSION = 2;
+
 export interface VaultEnvelope {
-  version: 1;
+  version: 2;
   params: KdfParams;
   salt: string; // base64
   kekWrapIv: string; // base64
@@ -85,31 +106,28 @@ export interface VaultEnvelope {
   payloadIv: string; // base64
   payload: string; // base64
   /**
-   * Internal 0x address bound to this vault, surfaced in plaintext so
-   * the UI can render the typed mono1 identity without triggering a
-   * biometric prompt at app boot. The address bytes are public
-   * information; the private key stays inside `payload`.
+   * Internal 20-byte address derived from the PQM-1 mnemonic, hex-encoded
+   * with `0x` prefix. Surfaced in plaintext so the UI can render the
+   * typed `mono1…` identity without triggering a biometric prompt at app
+   * boot. The address bytes are public information; the mnemonic stays
+   * inside `payload`.
    */
   address: string;
 }
 
 /**
- * Decrypted vault payload. The signing key sits inside the AES-GCM-sealed
- * payload, never in the clear and never in the keystore — only an unlock
- * flow that derives the right KEK can reveal it.
- *
- * For now we generate a fresh secp256k1 key at bootstrap (so the wallet
- * has a usable testnet identity from first launch); a future Stage 5
- * change will replace this with BIP-39 seed restoration without breaking
- * the payload shape — `secp256k1Priv` will simply be derived from the
- * mnemonic at unlock time.
+ * Decrypted vault payload. The 24-word PQM-1 mnemonic sits inside the
+ * AES-GCM-sealed payload, never in the clear and never in the keystore —
+ * only an unlock flow that derives the right KEK can reveal it. The
+ * ML-DSA-65 backend is materialised on demand from the mnemonic and
+ * never persisted.
  */
 export interface VaultPayload {
-  version: 1;
+  version: 2;
   createdAt: number; // unix seconds
-  /** 32-byte secp256k1 private key, hex-encoded (no `0x` prefix). */
-  secp256k1Priv: string;
-  /** Internal 0x address derived from the private key. */
+  /** 24-word PQM-1 v1 mnemonic with `0x01` algo tag (ML-DSA-65). */
+  pqm1Mnemonic: string;
+  /** Internal 20-byte address (hex with `0x` prefix). */
   address: string;
 }
 
@@ -122,7 +140,7 @@ interface VaultErrorPayload {
   message: string;
 }
 
-class VaultIoError extends Error {
+export class VaultIoError extends Error {
   readonly kind: "Path" | "Io";
   constructor(payload: VaultErrorPayload) {
     super(payload.message);
@@ -131,7 +149,23 @@ class VaultIoError extends Error {
   }
 }
 
-function asVaultError(cause: unknown): VaultIoError {
+/**
+ * Mnemonic / algo-tag rejection at the vault layer. Surfaces a clear
+ * "this is not a PQM-1 v1 ML-DSA-65 mnemonic" error so a user pasting an
+ * unrelated 24-word BIP-39 phrase (a MetaMask export, a Cosmos wallet)
+ * doesn't silently produce a different identity. Maps onto the SDK's
+ * `Pqm1Error` causes.
+ */
+export class VaultMnemonicError extends Error {
+  override readonly cause?: unknown;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "VaultMnemonicError";
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+function asVaultIoError(cause: unknown): VaultIoError {
   if (cause && typeof cause === "object" && "kind" in cause) {
     const c = cause as { kind?: string; message?: string };
     return new VaultIoError({
@@ -149,7 +183,7 @@ async function vaultExistsCmd(): Promise<boolean> {
   try {
     return await invoke<boolean>("vault_exists");
   } catch (cause) {
-    throw asVaultError(cause);
+    throw asVaultIoError(cause);
   }
 }
 
@@ -157,7 +191,7 @@ async function vaultReadCmd(): Promise<string | null> {
   try {
     return await invoke<string | null>("vault_read");
   } catch (cause) {
-    throw asVaultError(cause);
+    throw asVaultIoError(cause);
   }
 }
 
@@ -165,7 +199,7 @@ async function vaultWriteCmd(contents: string): Promise<void> {
   try {
     await invoke("vault_write", { contents });
   } catch (cause) {
-    throw asVaultError(cause);
+    throw asVaultIoError(cause);
   }
 }
 
@@ -173,14 +207,13 @@ async function vaultDeleteCmd(): Promise<void> {
   try {
     await invoke("vault_delete");
   } catch (cause) {
-    throw asVaultError(cause);
+    throw asVaultIoError(cause);
   }
 }
 
 // -----------------------------------------------------------------------------
 // Helpers — base64 (binary-safe), random bytes, AES-GCM via Web Crypto.
-// Web Crypto is available in the Tauri 2 webview on every target (WebKit on
-// iOS, WebView2 on Windows, WebKitGTK on Linux, Android System WebView).
+// Web Crypto is available in the Tauri 2 webview on every target.
 // -----------------------------------------------------------------------------
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -203,10 +236,11 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("invalid hex length");
-  const out = new Uint8Array(hex.length / 2);
+  const stripped = hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
+  if (stripped.length % 2 !== 0) throw new Error("invalid hex length");
+  const out = new Uint8Array(stripped.length / 2);
   for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    out[i] = parseInt(stripped.substr(i * 2, 2), 16);
   }
   return out;
 }
@@ -218,9 +252,6 @@ function randomBytes(len: number): Uint8Array {
 }
 
 async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
-  // SubtleCrypto requires an ArrayBuffer-backed view; some TS lib variants
-  // type Uint8Array as `Uint8Array<ArrayBufferLike>`, so slice into a fresh
-  // Uint8Array<ArrayBuffer> to keep the call site type-tight.
   const buf = new Uint8Array(raw.byteLength);
   buf.set(raw);
   return crypto.subtle.importKey("raw", buf, { name: "AES-GCM" }, false, [
@@ -271,6 +302,53 @@ async function deriveKek(password: string, salt: Uint8Array, params: KdfParams):
 }
 
 // -----------------------------------------------------------------------------
+// Mnemonic → address
+// -----------------------------------------------------------------------------
+
+/**
+ * Derive the internal 20-byte address (hex with `0x` prefix) from a
+ * PQM-1 v1 ML-DSA-65 mnemonic. Throws `VaultMnemonicError` if the
+ * mnemonic decodes to a non-`0x01` algo tag or a non-v1 version —
+ * wallets MUST refuse to silently accept a different signature
+ * algorithm's seed (whitepaper §21.2.1).
+ */
+export function addressHexFromMnemonic(mnemonic: string): string {
+  // pqm1MnemonicToPayload rejects non-`0x01` algo tags + non-v1 versions
+  // at the SDK layer; we re-throw as VaultMnemonicError so the wallet
+  // UI gets a typed surface for the "this isn't a PQM-1 v1 ML-DSA-65
+  // phrase" error.
+  const payload = (() => {
+    try {
+      return pqm1MnemonicToPayload(mnemonic);
+    } catch (cause) {
+      if (cause instanceof Pqm1Error) {
+        throw new VaultMnemonicError(
+          `mnemonic is not a valid PQM-1 v1 phrase: ${cause.message}`,
+          cause,
+        );
+      }
+      throw cause;
+    }
+  })();
+  // Belt-and-suspenders: assert the type-narrowed fields are what we
+  // expect. The SDK type system already pins these to the v1 literals,
+  // but if a future SDK widens the union, these are the lines that
+  // should refuse to load the legacy material.
+  if (payload.algoTag !== PQM1_ALGO_TAG_MLDSA65) {
+    throw new VaultMnemonicError(
+      `mnemonic algo tag is 0x${(payload.algoTag as number).toString(16).padStart(2, "0")}, expected 0x01 (ML-DSA-65)`,
+    );
+  }
+  if (payload.version !== PQM1_VERSION_V1) {
+    throw new VaultMnemonicError(
+      `mnemonic version is ${payload.version as number}, expected ${PQM1_VERSION_V1}`,
+    );
+  }
+  const bech32m = pqm1MnemonicToAddress(mnemonic);
+  return "0x" + typedBech32ToAddress(bech32m, "user").hex.slice(2);
+}
+
+// -----------------------------------------------------------------------------
 // Public API consumed by Onboarding + auth.ts.
 // -----------------------------------------------------------------------------
 
@@ -280,13 +358,10 @@ export async function vaultExists(): Promise<boolean> {
 }
 
 /**
- * Internal 0x address bound to the vault, read straight from the envelope's
- * plaintext header. Returns `null` if the vault hasn't been bootstrapped.
- * No biometric prompt, no decryption — public UI converts this to mono1.
- *
- * Older vaults (bootstrapped before the `address` envelope field landed)
- * report `null`; the UI surfaces a "wallet identity loading…" pane and
- * the next biometric-gated op resolves the address via the unlock path.
+ * Internal 20-byte address bound to the vault (hex `0x...`), read from
+ * the envelope's plaintext header. Returns `null` if the vault hasn't
+ * been bootstrapped. No biometric prompt, no decryption — public UI
+ * converts this to typed `mono1…` via `addressToTypedBech32("user", …)`.
  */
 export async function vaultBoundAddress(): Promise<string | null> {
   const env = await readEnvelope();
@@ -298,8 +373,11 @@ async function readEnvelope(): Promise<VaultEnvelope | null> {
   const raw = await vaultReadCmd();
   if (raw === null) return null;
   const parsed = JSON.parse(raw) as VaultEnvelope;
-  if (parsed.version !== 1) {
-    throw new Error(`unsupported vault version: ${parsed.version}`);
+  if (parsed.version !== VAULT_VERSION) {
+    throw new VaultIoError({
+      kind: "Io",
+      message: `unsupported vault version: ${parsed.version} (expected ${VAULT_VERSION})`,
+    });
   }
   return parsed;
 }
@@ -309,50 +387,59 @@ async function writeEnvelope(env: VaultEnvelope): Promise<void> {
 }
 
 /**
- * Fresh-install bootstrap. Generates the device-key + salt, derives the KEK,
- * encrypts a fresh empty payload, and persists everything.
+ * Fresh-install bootstrap. Generates the device-key + salt, derives the
+ * KEK, mints a brand-new PQM-1 mnemonic, seals it under the KEK, and
+ * persists everything.
  *
- * Returns the device-key (hex). Caller pushes it to the keystore.
+ * Returns the mnemonic so onboarding can show + verify it before the user
+ * lands on the wallet. The caller must `setUnlockSecret(deviceKeyHex)` so
+ * the biometric unlock path can recover the KEK.
  */
 export interface BootstrapResult {
-  /** 32-byte device-key, hex-encoded. Caller must `setUnlockSecret(deviceKeyHex)`. */
+  /** 32-byte device-key, hex-encoded. Caller pushes to keystore. */
   deviceKeyHex: string;
   /** The KEK in plain bytes — kept by the caller in memory only, for this session. */
   kek: Uint8Array;
+  /** The freshly-generated PQM-1 v1 mnemonic to be shown + verified. */
+  mnemonic: string;
+  /** Internal 20-byte address (hex `0x…`) derived from the mnemonic. */
+  address: string;
 }
 
-export async function bootstrap(password: string): Promise<BootstrapResult> {
+export interface BootstrapOptions {
+  /** Inject a known mnemonic (Import wallet flow). Defaults to a fresh one. */
+  importMnemonic?: string;
+}
+
+export async function bootstrap(
+  password: string,
+  options: BootstrapOptions = {},
+): Promise<BootstrapResult> {
   if (!password) throw new Error("password is empty");
+
+  const mnemonic = options.importMnemonic
+    ? options.importMnemonic.trim()
+    : generatePqm1Mnemonic();
+
+  // Address derivation also validates algo + version tags. Import paths
+  // surface VaultMnemonicError to the UI so a user pasting an unrelated
+  // BIP-39 phrase gets a precise "not a PQM-1 v1 ML-DSA-65 phrase" hint.
+  const address = addressHexFromMnemonic(mnemonic);
+
   const params = KDF_PARAMS;
   const salt = randomBytes(16);
   const deviceKey = randomBytes(32);
 
-  // Derive the KEK from password + salt.
   const kek = await deriveKek(password, salt, params);
 
-  // Wrap the KEK under the device-key so the biometric path can recover it
-  // without the password.
   const kekWrapIv = randomBytes(12);
   const kekWrap = await aesGcmEncrypt(deviceKey, kekWrapIv, kek);
 
-  // Generate a fresh secp256k1 key inside the payload. Ethers'
-  // `Wallet.createRandom` uses the platform CSPRNG; the key is then
-  // sealed under the KEK before any disk write so neither the on-disk
-  // envelope nor the keystore ever sees plaintext key material.
-  //
-  // A future Stage 5 change will swap key generation for BIP-39 seed
-  // restoration. The shape stays the same: every signing path inside the
-  // wallet derives `(secp256k1Priv, address)` from a payload field, so
-  // upstream callers don't move.
-  const wallet = Wallet.createRandom();
-  const secp256k1Priv = wallet.privateKey.startsWith("0x")
-    ? wallet.privateKey.slice(2)
-    : wallet.privateKey;
   const payload: VaultPayload = {
-    version: 1,
+    version: VAULT_VERSION,
     createdAt: Math.floor(Date.now() / 1000),
-    secp256k1Priv,
-    address: wallet.address.toLowerCase(),
+    pqm1Mnemonic: mnemonic,
+    address,
   };
   const payloadIv = randomBytes(12);
   const payloadCt = await aesGcmEncrypt(
@@ -362,34 +449,30 @@ export async function bootstrap(password: string): Promise<BootstrapResult> {
   );
 
   const envelope: VaultEnvelope = {
-    version: 1,
+    version: VAULT_VERSION,
     params,
     salt: bytesToBase64(salt),
     kekWrapIv: bytesToBase64(kekWrapIv),
     kekWrap: bytesToBase64(kekWrap),
     payloadIv: bytesToBase64(payloadIv),
     payload: bytesToBase64(payloadCt),
-    address: payload.address,
+    address,
   };
 
-  try {
-    await writeEnvelope(envelope);
-  } catch (cause) {
-    // Re-raise with the host-distinguishing flag so onboarding can surface
-    // a "demo mode" badge on desktop hosts where the path resolution may
-    // fail (no app data dir bundle yet).
-    throw cause;
-  }
+  await writeEnvelope(envelope);
 
-  return { deviceKeyHex: bytesToHex(deviceKey), kek };
+  return {
+    deviceKeyHex: bytesToHex(deviceKey),
+    kek,
+    mnemonic,
+    address,
+  };
 }
 
 /**
  * Biometric path: caller has already passed the OS biometric prompt and
- * retrieved the device-key from the keystore. We unwrap the KEK and verify
- * the payload decrypts.
- *
- * Throws if the envelope is missing or AES-GCM authentication fails.
+ * retrieved the device-key from the keystore. Unwrap the KEK, decrypt the
+ * payload. AES-GCM authentication acts as integrity verification.
  */
 export async function unlockWithDeviceKey(deviceKeyHex: string): Promise<{
   kek: Uint8Array;
@@ -414,11 +497,9 @@ export async function unlockWithDeviceKey(deviceKeyHex: string): Promise<{
 
 /**
  * Password path: derive the KEK from the entered password + on-disk salt,
- * then attempt to decrypt the payload. AES-GCM authentication acts as the
+ * then attempt to decrypt the payload. AES-GCM authentication acts as
  * password verification — wrong password = thrown error (no plaintext
  * compare anywhere).
- *
- * Returns the KEK + payload on success; throws on bad password.
  */
 export async function unlockWithPassword(password: string): Promise<{
   kek: Uint8Array;
@@ -439,7 +520,7 @@ export async function unlockWithPassword(password: string): Promise<{
 
 /**
  * Fast password verification — returns true iff the password decrypts the
- * envelope, without surfacing the KEK to the caller.
+ * envelope. Does not surface the KEK to the caller.
  */
 export async function verifyPasswordAgainstVault(password: string): Promise<boolean> {
   try {
@@ -451,9 +532,9 @@ export async function verifyPasswordAgainstVault(password: string): Promise<bool
 }
 
 /**
- * Wipe the vault (used by re-onboarding on hard-reset, or by the "delete
- * wallet" affordance in Settings). Caller is responsible for clearing the
- * keystore device-key separately.
+ * Wipe the vault (re-onboarding hard-reset, "delete wallet" affordance in
+ * Settings, "I don't know my phrase" recovery). Caller is responsible
+ * for clearing the keystore device-key separately.
  */
 export async function wipe(): Promise<void> {
   await vaultDeleteCmd();

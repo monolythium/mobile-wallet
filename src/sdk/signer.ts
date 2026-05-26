@@ -1,47 +1,31 @@
-// Wallet-side signer factory for the mobile wallet.
+// Wallet-side signer for the mobile wallet (post-EVM, ML-DSA-65 / PQM-1).
 //
-// `@monolythium/core-sdk` ships an ethers v6 compat shim
-// (`MonolythiumSigner` extending `AbstractSigner`). This module wires the
-// wallet's biometric+vault auth path into that shim so the
-// OperationsDrawer can flow a "send LYTH" through the canonical ethers
-// Signer surface (`signTransaction` + `provider.broadcastTransaction`)
-// without the page code knowing anything about how the key gets recovered.
+// The signing primitive is `MlDsa65Backend` from `@monolythium/core-sdk`.
+// Native tx submission goes through `buildEncryptedSubmission` (in
+// `send.ts`), which takes the backend, builds the inner native tx,
+// produces the ML-DSA-65 outer signature, ML-KEM-encrypts the envelope,
+// and returns wire-ready hex.
 //
 // Two backends ship today:
 //
-//   makeBiometricSigner({ unlock, address })
-//     → MonolythiumSigner that, on every signing call, re-runs the
-//       supplied `unlock()` (canonically: biometric prompt → keystore
-//       device-key → AES-GCM-decrypt envelope → payload), reads the
-//       secp256k1 private key carried inside the AES-GCM-sealed payload,
-//       and uses an ephemeral `ethers.Wallet` to produce the signature.
-//       The key never leaves the call frame — `signTransaction`
-//       constructs an ephemeral wallet for exactly the duration of one
-//       signing op.
+//   makeBiometricBackend({ unlock })
+//     → MlDsa65Backend that, on every signing call, re-runs the supplied
+//       `unlock()` (canonically: biometric prompt → keystore device-key →
+//       AES-GCM-decrypt envelope → PQM-1 mnemonic → ML-DSA-65 backend),
+//       and delegates the signing op. The mnemonic and derived seed
+//       never escape the call frame — a fresh backend is materialised
+//       for exactly the duration of one signing op.
 //
-//   makeReadOnlySigner(address)
-//     → MonolythiumSigner that resolves `getAddress()` and throws on
-//       every signing path. Used by ethers callers that only need the
-//       address (e.g. `provider.getBalance(signer.address)`).
-//
-// Sibling design: desktop-wallet ships a Ledger backend over the same
-// `MonolythiumSignerBackend` interface (`makeLedgerSigner`); mobile has
-// no Ledger HID surface so the biometric+vault path is the only signing
-// route. The wire shape is identical so the OperationsDrawer / send
-// composer code stays portable across surfaces.
+//   makeReadOnlyIdentity(address)
+//     → IdentityHandle that resolves the bound address for UI display
+//       and throws on every signing path. Used by surfaces that only
+//       need the wallet's address (e.g. Receive screen, address chips).
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-  MonolythiumSigner,
-  type MonolythiumSignerBackend,
-} from "@monolythium/core-sdk/ethers";
-import {
-  Wallet,
-  type Provider,
-  type TransactionRequest,
-  type TypedDataDomain,
-  type TypedDataField,
-} from "ethers";
+  pqm1MnemonicToMlDsa65Backend,
+  type MlDsa65Backend,
+} from "@monolythium/core-sdk/crypto";
 import {
   unlockWithDeviceKey,
   unlockWithPassword,
@@ -58,70 +42,40 @@ import {
  */
 export type VaultUnlock = () => Promise<VaultPayload>;
 
-interface BiometricSignerArgs {
-  /** Resolves to the decrypted vault payload — see `VaultUnlock`. */
+export interface BiometricBackendArgs {
   unlock: VaultUnlock;
-  /** Internal 0x address the vault payload was bootstrapped to. */
+}
+
+export interface IdentityHandle {
+  /** Internal 20-byte address as hex `0x…`. */
   address: string;
-  provider?: Provider | null;
+  /** Returns a fresh ML-DSA-65 backend; runs the unlock flow each time. */
+  unlockBackend?: () => Promise<MlDsa65Backend>;
 }
 
 /**
- * Build an ethers v6 `Signer` backed by the biometric+vault auth path.
- *
- * Each signing call:
- *   1. invokes `unlock()` → returns the decrypted vault payload;
- *   2. builds a transient `ethers.Wallet` from the secp256k1 key in the
- *      payload;
- *   3. delegates the signing op to the wallet;
- *   4. drops the wallet on the next event-loop turn — there is no module
- *      state holding key material between calls.
+ * Wrap the vault-unlock flow into a "give me a fresh ML-DSA-65 backend
+ * for one signing op" factory. The backend's seed material is sourced
+ * from the PQM-1 mnemonic carried in the decrypted payload; both stay
+ * inside this call frame. Callers MUST drop the returned backend after
+ * the signing op completes.
  */
-export function makeBiometricSigner(args: BiometricSignerArgs): MonolythiumSigner {
-  const { unlock, address, provider } = args;
-  const backend: MonolythiumSignerBackend = {
-    getAddress: async () => address,
-    signTransaction: async (tx: TransactionRequest) => {
-      const wallet = await unlockEphemeralWallet(unlock);
-      return wallet.signTransaction(tx);
-    },
-    signMessage: async (message: string | Uint8Array) => {
-      const wallet = await unlockEphemeralWallet(unlock);
-      return wallet.signMessage(message);
-    },
-    signTypedData: async (
-      domain: TypedDataDomain,
-      types: Record<string, Array<TypedDataField>>,
-      value: Record<string, unknown>,
-    ) => {
-      const wallet = await unlockEphemeralWallet(unlock);
-      return wallet.signTypedData(domain, types, value);
-    },
+export function makeBiometricBackendFactory(
+  args: BiometricBackendArgs,
+): () => Promise<MlDsa65Backend> {
+  return async () => {
+    const payload = await args.unlock();
+    return pqm1MnemonicToMlDsa65Backend(payload.pqm1Mnemonic);
   };
-  return new MonolythiumSigner(backend, provider ?? null);
 }
 
 /**
- * Build a read-only `Signer`. Returns `address` from `getAddress()` and
- * throws on every signing path.
+ * Read-only identity handle. The address is the 20-byte hex bound to
+ * the unlocked vault; `unlockBackend` is undefined so callers that
+ * accidentally try to sign get a typed error rather than a silent fail.
  */
-export function makeReadOnlySigner(
-  address: string,
-  provider?: Provider | null,
-): MonolythiumSigner {
-  const backend: MonolythiumSignerBackend = {
-    getAddress: async () => address,
-    signTransaction: async () => {
-      throw new Error("read-only signer cannot sign transactions");
-    },
-    signMessage: async () => {
-      throw new Error("read-only signer cannot sign messages");
-    },
-    signTypedData: async () => {
-      throw new Error("read-only signer cannot sign typed data");
-    },
-  };
-  return new MonolythiumSigner(backend, provider ?? null);
+export function makeReadOnlyIdentity(address: string): IdentityHandle {
+  return { address };
 }
 
 /**
@@ -131,8 +85,7 @@ export function makeReadOnlySigner(
  * vault envelope.
  *
  * Throws if the keystore is empty (vault wasn't bootstrapped, or was
- * wiped) or if AES-GCM authentication fails (envelope was tampered with
- * or device-key drifted from the on-disk wrap).
+ * wiped) or if AES-GCM authentication fails.
  */
 export async function unlockViaBiometric(): Promise<VaultPayload> {
   const deviceKeyHex = await invoke<string | null>("keychain_get", {
@@ -153,12 +106,4 @@ export async function unlockViaBiometric(): Promise<VaultPayload> {
 export async function unlockViaPassword(password: string): Promise<VaultPayload> {
   const { payload } = await unlockWithPassword(password);
   return payload;
-}
-
-async function unlockEphemeralWallet(unlock: VaultUnlock): Promise<Wallet> {
-  const payload = await unlock();
-  // The payload's `secp256k1Priv` is the unprefixed hex; ethers' `Wallet`
-  // constructor accepts both `0x`-prefixed and bare hex but we normalize
-  // for clarity at the call site.
-  return new Wallet(`0x${payload.secp256k1Priv}`);
 }
