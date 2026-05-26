@@ -29,15 +29,16 @@ import {
 } from "./components/WalletConnectSheet";
 import { Home } from "./screens/Home";
 import { Keys } from "./screens/Keys";
-import { Operator } from "./screens/Operator";
 import { Audit } from "./screens/Audit";
-import { Alerts } from "./screens/Alerts";
 import { Ask } from "./screens/Ask";
 import { Onboarding } from "./screens/Onboarding";
 import { QrScanner } from "./screens/QrScanner";
 import { Sessions } from "./screens/Sessions";
 import { Send } from "./screens/Send";
 import { Receive } from "./screens/Receive";
+import { Activity } from "./screens/Activity";
+import { Stake } from "./screens/Stake";
+import { Contacts } from "./screens/Contacts";
 import { Settings, type SettingsRoute } from "./screens/Settings";
 import { RevealPhrase } from "./screens/settings/RevealPhrase";
 import { ResetWallet } from "./screens/settings/ResetWallet";
@@ -63,12 +64,12 @@ import {
 import "./styles/tokens.css";
 import "./styles/wallet.css";
 
-type Tab = "home" | "operator" | "alerts" | "ask" | "more";
+type Tab = "home" | "activity" | "stake" | "ask" | "more";
 
 const TABS: { k: Tab; label: string; icon: IconName }[] = [
   { k: "home", label: "Wallet", icon: "home" },
-  { k: "operator", label: "Cluster", icon: "stake" },
-  { k: "alerts", label: "Alerts", icon: "alert" },
+  { k: "activity", label: "Activity", icon: "activity" },
+  { k: "stake", label: "Stake", icon: "stake" },
   { k: "ask", label: "Ask", icon: "search" },
   { k: "more", label: "More", icon: "more" },
 ];
@@ -79,6 +80,7 @@ type MoreScreen =
   | "audit"
   | "sessions"
   | "settings"
+  | "settings/contacts"
   | "settings/reveal-phrase"
   | "settings/reset-wallet"
   | "settings/about";
@@ -414,8 +416,10 @@ export default function App() {
           onClose={() => setReceiveOpen(false)}
         />
       )}
-      {tab === "operator" && <Operator />}
-      {tab === "alerts" && <Alerts openOperation={openOperation} />}
+      {tab === "activity" && <Activity selfAddress={selfAddress} />}
+      {tab === "stake" && (
+        <Stake selfAddress={selfAddress} openOperation={openOperation} />
+      )}
       {tab === "ask" && <Ask openOperation={openOperation} />}
       {tab === "more" && more === "menu" && <MoreMenu setMore={setMore} />}
       {tab === "more" && more === "keys" && <Keys openOperation={openOperation} />}
@@ -430,6 +434,9 @@ export default function App() {
             else setMore(`settings/${route}` as MoreScreen);
           }}
         />
+      )}
+      {tab === "more" && more === "settings/contacts" && (
+        <Contacts onClose={() => setMore("settings")} />
       )}
       {tab === "more" && more === "settings/reveal-phrase" && (
         <RevealPhrase onClose={() => setMore("settings")} />
@@ -598,10 +605,10 @@ function tabTitle(tab: Tab, more: MoreScreen): string {
   switch (tab) {
     case "home":
       return "Monolythium Wallet";
-    case "operator":
-      return "Cluster";
-    case "alerts":
-      return "Alerts";
+    case "activity":
+      return "Activity";
+    case "stake":
+      return "Stake";
     case "ask":
       return "Ask";
     case "more":
@@ -609,6 +616,7 @@ function tabTitle(tab: Tab, more: MoreScreen): string {
       if (more === "audit") return "Audit";
       if (more === "sessions") return "WalletConnect";
       if (more === "settings") return "Settings";
+      if (more === "settings/contacts") return "Contacts";
       if (more === "settings/reveal-phrase") return "Recovery phrase";
       if (more === "settings/reset-wallet") return "Reset wallet";
       if (more === "settings/about") return "About";
