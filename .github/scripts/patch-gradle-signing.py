@@ -76,12 +76,16 @@ android_start = next(
 )
 lines.insert(android_start + 1, SIGNING_BLOCK)
 
-# 4. Wire signingConfig into the release buildType
+# 4. Wire signingConfig into the release buildType + embed native debug symbols
+#    so Play can symbolicate Rust .so crash traces (resolves the
+#    "App Bundle contains native code, no debug symbols" Play warning).
 for i, line in enumerate(lines):
     if 'getByName("release")' in line and "{" in line:
-        # Insert signingConfig assignment on the next line, with matching indent
         indent = " " * (len(line) - len(line.lstrip()) + 4)
-        lines.insert(i + 1, f'{indent}signingConfig = signingConfigs.getByName("release")\n')
+        lines.insert(i + 1,
+            f'{indent}signingConfig = signingConfigs.getByName("release")\n'
+            f'{indent}ndk {{ debugSymbolLevel = "SYMBOL_TABLE" }}\n'
+        )
         break
 else:
     print("ERROR: could not find buildTypes.release", file=sys.stderr)
