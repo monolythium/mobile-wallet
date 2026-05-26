@@ -1,20 +1,21 @@
 // Onboarding — runs once per install, before the wallet shell appears.
 //
-// Flow (post-PQM-1 standalone wallet):
-//   loading → intro → password (with acknowledgement) → deriving
-//          → show-phrase → verify-phrase → enrolling → done
+// Two paths, both ending at enrolling → done:
 //
-// At `deriving` we generate a fresh PQM-1 v1 24-word mnemonic, derive an
-// ML-DSA-65 keypair, encrypt the mnemonic into the vault, and stage the
-// device-key in the OS keystore. The mnemonic is then shown to the user
-// and verified via a fill-in-the-blanks challenge before we enrol the
-// biometric. The mnemonic never leaves the wallet — it sits in component
-// state for the show + verify steps only, then is dropped on transition
-// to enrolling.
+//   Create:  loading → intro → password+ack → deriving → show-phrase
+//                    → verify-phrase → enrolling → done
+//   Import:  loading → intro → import-phrase → password+ack
+//                    → deriving → enrolling → done
 //
-// Biometric enrolment runs AFTER the vault is on disk so a sensor
-// cancellation doesn't block onboarding — the user still has a working
-// password fallback.
+// At `deriving` we either generate a fresh PQM-1 v1 24-word mnemonic
+// (Create) or accept the imported phrase verbatim after PQM-1 algo/version
+// validation (Import). In both cases the mnemonic is encrypted into the
+// vault and the device-key is staged in the OS keystore.
+//
+// The Create flow shows + verifies the mnemonic before enrolling the
+// biometric. The Import flow skips show/verify — the user already has
+// the phrase. Biometric enrolment runs AFTER the vault is on disk so a
+// sensor cancellation doesn't block onboarding.
 
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
@@ -27,6 +28,10 @@ import {
   type AuthError,
   type BiometricStatus,
 } from "../sdk/auth";
+import {
+  addressHexFromMnemonic,
+  VaultMnemonicError,
+} from "../sdk/vault";
 
 interface Props {
   onDone: () => void;
@@ -35,6 +40,7 @@ interface Props {
 type Step =
   | "loading"
   | "intro"
+  | "import-phrase"
   | "password"
   | "deriving"
   | "show-phrase"
@@ -43,6 +49,7 @@ type Step =
   | "done";
 
 const MIN_PASSWORD_LEN = 8;
+const PQM1_WORDS = 24;
 
 export function Onboarding({ onDone }: Props) {
   const [step, setStep] = useState<Step>("loading");
@@ -52,6 +59,9 @@ export function Onboarding({ onDone }: Props) {
   const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mnemonic, setMnemonic] = useState<string | null>(null);
+  const [isImport, setIsImport] = useState(false);
+  const [importDraft, setImportDraft] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +77,39 @@ export function Onboarding({ onDone }: Props) {
 
   const continueFromIntro = () => {
     setError(null);
+    setIsImport(false);
+    setStep("password");
+  };
+
+  const beginImport = () => {
+    setError(null);
+    setIsImport(true);
+    setImportDraft("");
+    setImportError(null);
+    setStep("import-phrase");
+  };
+
+  const submitImport = () => {
+    const cleaned = importDraft.trim().split(/\s+/).join(" ").toLowerCase();
+    const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
+    if (wordCount !== PQM1_WORDS) {
+      setImportError(
+        `Expected ${PQM1_WORDS} words, got ${wordCount}. PQM-1 v1 recovery phrases are exactly 24 words.`,
+      );
+      return;
+    }
+    try {
+      addressHexFromMnemonic(cleaned);
+    } catch (cause) {
+      if (cause instanceof VaultMnemonicError) {
+        setImportError(cause.message);
+        return;
+      }
+      setImportError((cause as Error)?.message ?? "phrase rejected");
+      return;
+    }
+    setMnemonic(cleaned);
+    setImportError(null);
     setStep("password");
   };
 
@@ -91,7 +134,10 @@ export function Onboarding({ onDone }: Props) {
 
     let mnem: string;
     try {
-      const result = await bootstrapVault(password);
+      const result = await bootstrapVault(
+        password,
+        isImport && mnemonic ? { importMnemonic: mnemonic } : {},
+      );
       mnem = result.mnemonic;
     } catch (cause) {
       const err = cause as AuthError;
@@ -112,19 +158,20 @@ export function Onboarding({ onDone }: Props) {
     setPassword("");
     setConfirm("");
 
+    if (isImport) {
+      // Imported wallets skip show + verify — the user already has the
+      // phrase by definition. Drop the mnemonic from state and go
+      // straight to biometric enrolment.
+      setMnemonic(null);
+      await enrolBiometricAndFinish();
+      return;
+    }
+
     setMnemonic(mnem);
     setStep("show-phrase");
   };
 
-  const onPhraseShown = () => {
-    setStep("verify-phrase");
-  };
-
-  const onPhraseVerified = async () => {
-    // The mnemonic was only retained to render show + verify. Drop the
-    // reference now that the challenge is solved.
-    setMnemonic(null);
-
+  const enrolBiometricAndFinish = async () => {
     if (bio?.available) {
       setStep("enrolling");
       try {
@@ -140,8 +187,18 @@ export function Onboarding({ onDone }: Props) {
         }
       }
     }
-
     setStep("done");
+  };
+
+  const onPhraseShown = () => {
+    setStep("verify-phrase");
+  };
+
+  const onPhraseVerified = async () => {
+    // The mnemonic was only retained to render show + verify. Drop the
+    // reference now that the challenge is solved.
+    setMnemonic(null);
+    await enrolBiometricAndFinish();
   };
 
   return (
@@ -217,8 +274,93 @@ export function Onboarding({ onDone }: Props) {
               style={{ marginTop: 14 }}
               onClick={continueFromIntro}
             >
-              Continue
+              Create new wallet
             </button>
+            <button
+              className="mw-btn mw-btn--block"
+              style={{ marginTop: 8 }}
+              onClick={beginImport}
+            >
+              I already have a recovery phrase
+            </button>
+          </>
+        )}
+
+        {step === "import-phrase" && (
+          <>
+            <div className="mw-card">
+              <div className="mw-card__head">
+                <h3>Import recovery phrase</h3>
+              </div>
+              <p
+                style={{
+                  margin: "0 0 14px",
+                  fontSize: 12.5,
+                  color: "var(--fg-300)",
+                  lineHeight: 1.55,
+                }}
+              >
+                Paste your 24-word PQM-1 v1 phrase. Words are separated by
+                spaces or line breaks. Only ML-DSA-65 phrases generated by
+                Monolythium wallets are accepted — MetaMask or Cosmos
+                BIP-39 phrases will be rejected.
+              </p>
+              <textarea
+                autoFocus
+                autoCapitalize="none"
+                spellCheck={false}
+                value={importDraft}
+                onChange={(e) => setImportDraft(e.target.value)}
+                placeholder={`word1 word2 word3 …\n(24 words total)`}
+                rows={5}
+                style={{
+                  width: "100%",
+                  padding: "11px 12px",
+                  fontSize: 14,
+                  fontFamily: "var(--f-mono)",
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 10,
+                  color: "var(--fg-100)",
+                  outline: "none",
+                  resize: "vertical",
+                }}
+              />
+              {importError && (
+                <p
+                  style={{
+                    margin: "10px 0 0",
+                    fontSize: 12,
+                    color: "var(--err)",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {importError}
+                </p>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="mw-btn"
+                onClick={() => {
+                  setStep("intro");
+                  setImportDraft("");
+                  setImportError(null);
+                }}
+                style={{ flex: 1 }}
+              >
+                Cancel
+              </button>
+              <button
+                className="mw-btn mw-btn--primary mw-btn--block"
+                onClick={submitImport}
+                disabled={importDraft.trim().length === 0}
+                style={{ flex: 1 }}
+              >
+                Continue
+              </button>
+            </div>
           </>
         )}
 
