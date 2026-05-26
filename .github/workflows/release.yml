@@ -119,18 +119,70 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm tauri ios init
 
-      - name: Build iOS (.ipa)
+      - name: Apply brand icons (must follow tauri ios init)
+        run: pnpm tauri icon src-tauri/icons/icon.png
+
+      - name: Patch Xcode project for manual signing
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          PROFILE="$HOME/Library/MobileDevice/Provisioning Profiles/release.mobileprovision"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin \
+            <<< "$(security cms -D -i "$PROFILE")")
+          python3 .github/scripts/patch-pbxproj-signing.py \
+            src-tauri/gen/apple/mobile-wallet.xcodeproj/project.pbxproj \
+            "$APPLE_TEAM_ID" \
+            "Apple Distribution: Nayiem Willems ($APPLE_TEAM_ID)" \
+            "$PROFILE_UUID"
+
+      - name: Archive iOS (tauri's wrapper — export step expected to fail)
+        continue-on-error: true
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           pnpm tauri ios build --export-method app-store-connect \
             --config "{\"bundle\":{\"iOS\":{\"developmentTeam\":\"$APPLE_TEAM_ID\"}}}"
 
+      - name: Verify archive exists
+        run: test -d src-tauri/gen/apple/build/mobile-wallet_iOS.xcarchive
+
+      - name: Export IPA with manual-signing ExportOptions
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios-export
+          cat > build/ios-export/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key><string>app-store-connect</string>
+              <key>teamID</key><string>$APPLE_TEAM_ID</string>
+              <key>signingStyle</key><string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>com.monolythium.wallet</key>
+                  <string>com.monolythium.wallet AppStore</string>
+              </dict>
+              <key>uploadBitcode</key><false/>
+              <key>uploadSymbols</key><true/>
+              <key>destination</key><string>export</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath src-tauri/gen/apple/build/mobile-wallet_iOS.xcarchive \
+            -exportPath build/ios-export \
+            -exportOptionsPlist build/ios-export/ExportOptions.plist \
+            -allowProvisioningUpdates
+
       - name: Locate IPA
         id: ipa
         run: |
           set -euo pipefail
-          IPA=$(find src-tauri/gen/apple/build -name "*.ipa" | head -1)
+          IPA=$(find build/ios-export -name "*.ipa" | head -1)
           if [ -z "$IPA" ]; then
             echo "::error::no IPA produced"; exit 1
           fi
@@ -148,7 +200,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
-          path: src-tauri/gen/apple/build/**/*.ipa
+          path: build/ios-export/*.ipa
 
   android:
     needs: verify
@@ -182,6 +234,9 @@ jobs:
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: pnpm tauri android init
+
+      - name: Apply brand icons (must follow tauri android init)
+        run: pnpm tauri icon src-tauri/icons/icon.png
 
       - name: Decode upload keystore
         env:
