@@ -63,7 +63,7 @@ import {
   pqm1MnemonicToAddress,
   pqm1MnemonicToPayload,
 } from "@monolythium/core-sdk/crypto";
-import { typedBech32ToAddress } from "@monolythium/core-sdk";
+import { normalizeAddressHex } from "@monolythium/core-sdk";
 
 /**
  * Argon2id KDF parameters. Bumping any of these is a vault re-encryption —
@@ -344,8 +344,10 @@ export function addressHexFromMnemonic(mnemonic: string): string {
       `mnemonic version is ${payload.version as number}, expected ${PQM1_VERSION_V1}`,
     );
   }
-  const bech32m = pqm1MnemonicToAddress(mnemonic);
-  return "0x" + typedBech32ToAddress(bech32m, "user").hex.slice(2);
+  // pqm1MnemonicToAddress returns an already-normalized `0x...` 20-byte
+  // hex string (MlDsa65Backend.getAddress() → bytesToHex). Run it through
+  // normalizeAddressHex to lower-case + length-check it.
+  return normalizeAddressHex(pqm1MnemonicToAddress(mnemonic));
 }
 
 // -----------------------------------------------------------------------------
