@@ -22,6 +22,11 @@ TODO.md
 *.key
 *.keystore
 *.p12
+*.p8
+*.jks
+*.mobileprovision
+keystore.properties
+creds.env
 secrets/
 credentials/
 
