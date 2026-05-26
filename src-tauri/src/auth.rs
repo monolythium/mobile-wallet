@@ -141,7 +141,6 @@ mod imp {
             title: Some("Monolythium Wallet".into()),
             subtitle: None,
             confirmation_required: Some(true),
-            max_attempts_ios: None,
         };
         match app.biometric().authenticate(reason, opts) {
             Ok(()) => Ok(true),
@@ -156,19 +155,18 @@ mod imp {
         }
     }
 
+    const KEYCHAIN_SERVICE: &str = "com.monolythium.wallet";
+
     pub(super) async fn keychain_has_impl(
         app: AppHandle,
         key: String,
     ) -> Result<bool, AuthError> {
-        // tauri-plugin-keystore is single-secret oriented; we namespace keys
-        // by hashing them into the existing `store` slot. Until the plugin
-        // grows multi-key support, the wallet only persists one secret per
-        // install (the unlock key derived from password+salt) and `key` is
-        // a logical label.
-        let _ = key;
-        match app.keystore().exists() {
-            Ok(present) => Ok(present),
-            Err(e) => Err(AuthError::Keystore(e.to_string())),
+        match app.keystore().retrieve(tauri_plugin_keystore::RetrieveRequest {
+            service: KEYCHAIN_SERVICE.into(),
+            user: key,
+        }) {
+            Ok(resp) => Ok(resp.value.is_some()),
+            Err(_) => Ok(false),
         }
     }
 
@@ -179,7 +177,7 @@ mod imp {
     ) -> Result<(), AuthError> {
         let _ = key;
         app.keystore()
-            .store(value)
+            .store(tauri_plugin_keystore::StoreRequest { value })
             .map_err(|e| AuthError::Keystore(e.to_string()))
     }
 
@@ -187,12 +185,11 @@ mod imp {
         app: AppHandle,
         key: String,
     ) -> Result<Option<String>, AuthError> {
-        let _ = key;
-        match app.keystore().retrieve() {
-            Ok(v) => Ok(Some(v)),
-            // The plugin returns an error variant for "missing"; treat any
-            // error here as "no secret yet" rather than failing the call,
-            // which lets onboarding decide what to do next.
+        match app.keystore().retrieve(tauri_plugin_keystore::RetrieveRequest {
+            service: KEYCHAIN_SERVICE.into(),
+            user: key,
+        }) {
+            Ok(resp) => Ok(resp.value),
             Err(_) => Ok(None),
         }
     }
@@ -201,9 +198,11 @@ mod imp {
         app: AppHandle,
         key: String,
     ) -> Result<(), AuthError> {
-        let _ = key;
         app.keystore()
-            .remove()
+            .remove(tauri_plugin_keystore::RemoveRequest {
+                service: KEYCHAIN_SERVICE.into(),
+                user: key,
+            })
             .map_err(|e| AuthError::Keystore(e.to_string()))
     }
 }
