@@ -18,10 +18,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ADDRESS_KIND_HRPS,
-  MonolythiumProvider,
   RpcClient,
   addressToTypedBech32,
 } from "@monolythium/core-sdk";
+import { MonolythiumProvider } from "@monolythium/core-sdk/ethers";
 import { previewMaxFeeLyth, sendLyth } from "../send";
 import {
   pqm1MnemonicToMlDsa65Backend,
