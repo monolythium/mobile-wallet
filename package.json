@@ -1,7 +1,7 @@
 {
   "name": "@monolythium/mobile-wallet",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Monolythium mobile wallet (Tauri 2 mobile, iOS + Android, React 19)",
   "license": "Apache-2.0",
@@ -25,9 +25,6 @@
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-deep-link": "^2.4.8",
     "@tauri-apps/plugin-store": "^2.4.2",
-    "@walletconnect/sign-client": "^2.23.9",
-    "@walletconnect/types": "^2.23.9",
-    "@walletconnect/utils": "^2.23.9",
     "@zxing/browser": "^0.1.5",
     "@zxing/library": "^0.21.3",
     "qrcode.react": "^4.2.0",

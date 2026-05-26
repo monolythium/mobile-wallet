@@ -62,9 +62,8 @@ export function ResetWallet({ onResetComplete, onClose }: Props) {
             lineHeight: 1.55,
           }}
         >
-          This wipes the encrypted vault, the device-key in the
-          keystore, and any WalletConnect sessions stored on this
-          device.
+          This wipes the encrypted vault and the device-key in the
+          keystore on this device.
         </p>
         <p
           style={{
