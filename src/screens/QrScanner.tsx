@@ -136,7 +136,7 @@ export function QrScanner({ onResult, onClose }: Props) {
           <div className="mw-scanner__overlay" aria-hidden="true">
             <div className="mw-scanner__frame" />
             <div className="mw-scanner__hint">
-              Point at a QR code · address, send link, or WalletConnect
+              Point at a QR code · address or send link
             </div>
           </div>
         )}
@@ -181,7 +181,7 @@ export function QrScanner({ onResult, onClose }: Props) {
             if (e.key === "Enter") submitPaste();
           }}
           className="mw-scanner__paste-input"
-          placeholder="monolythium://send?to=mono1… · wc:…"
+          placeholder="monolythium://send?to=mono1…"
           aria-label="Paste wallet link"
         />
         <button

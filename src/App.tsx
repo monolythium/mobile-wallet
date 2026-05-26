@@ -1,21 +1,14 @@
-// Stage 4 — Monolythium Wallet (mobile).
+// Monolythium Wallet (mobile).
 // Layout: single-column scroll with a frosted bottom tab bar. Operations
 // drawer rises from the bottom and runs the four-state machine
 // (preview -> auth -> executing -> done). All chain reads route through
 // `@monolythium/core-sdk` (mono-core-sdk is the single seam).
 //
-// Stage 4 added:
-//   - Deep-link subscriber (monolythium:// + lyth: + wc:) — every URL
-//     funnels through `parseDeepLink` and lands either in OperationsDrawer
-//     (send / sign) or WalletConnectSheet (proposal / request).
-//   - QR scanner (`@zxing/browser`) reachable from the Home screen's Scan
-//     affordance and the Sessions "Scan QR code" button. The scan output
-//     reuses the same `parseDeepLink` parser as URL schemes — the wallet
-//     has exactly one URI parser.
-//   - WalletConnect v2 (`@walletconnect/sign-client`) — pair via QR or
-//     URL scheme, persist sessions to a Tauri store file, surface
-//     incoming `session_proposal` and `session_request` events through
-//     the WalletConnectSheet.
+// Deep-link subscriber handles monolythium:// + lyth: URLs; every URL
+// funnels through `parseDeepLink` and lands in OperationsDrawer
+// (send / sign). QR scanner (`@zxing/browser`) reachable from the Home
+// screen's Scan affordance reuses the same `parseDeepLink` parser as
+// URL schemes — the wallet has exactly one URI parser.
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./components/Icon";
@@ -23,17 +16,12 @@ import {
   OperationsDrawer,
   type OperationRequest,
 } from "./components/OperationsDrawer";
-import {
-  WalletConnectSheet,
-  type WcSheetSubject,
-} from "./components/WalletConnectSheet";
 import { Home } from "./screens/Home";
 import { Keys } from "./screens/Keys";
 import { Audit } from "./screens/Audit";
 import { Ask } from "./screens/Ask";
 import { Onboarding } from "./screens/Onboarding";
 import { QrScanner } from "./screens/QrScanner";
-import { Sessions } from "./screens/Sessions";
 import { Send } from "./screens/Send";
 import { Receive } from "./screens/Receive";
 import { Activity } from "./screens/Activity";
@@ -55,12 +43,6 @@ import {
   subscribeDeepLinks,
   type DeepLinkAction,
 } from "./sdk/deeplink";
-import {
-  init as wcInit,
-  isConfigured as wcIsConfigured,
-  pair as wcPair,
-  subscribe as wcSubscribe,
-} from "./sdk/wc";
 import "./styles/tokens.css";
 import "./styles/wallet.css";
 
@@ -78,7 +60,6 @@ type MoreScreen =
   | "menu"
   | "keys"
   | "audit"
-  | "sessions"
   | "settings"
   | "settings/contacts"
   | "settings/reveal-phrase"
@@ -91,7 +72,6 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("home");
   const [more, setMore] = useState<MoreScreen>("menu");
   const [operation, setOperation] = useState<OperationRequest | null>(null);
-  const [wcSubject, setWcSubject] = useState<WcSheetSubject | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
@@ -236,25 +216,7 @@ export default function App() {
         break;
       }
       case "walletconnect": {
-        if (!wcIsConfigured()) {
-          setToast(
-            "WalletConnect not configured for this build (set VITE_WC_PROJECT_ID).",
-          );
-          break;
-        }
-        // Boot SignClient lazily and pair. The matching `session_proposal`
-        // arrives via the WC subscriber and pops the WalletConnectSheet.
-        void (async () => {
-          try {
-            await wcPair(action.uri);
-            setToast("Pairing… waiting for the dapp's session proposal.");
-          } catch (cause) {
-            setToast(
-              (cause as Error)?.message ??
-                "WalletConnect pair failed",
-            );
-          }
-        })();
+        setToast("WalletConnect is not supported on Monolythium.");
         break;
       }
       case "unknown":
@@ -287,40 +249,6 @@ export default function App() {
     };
   }, [onboarding, routeAction]);
 
-  // Subscribe to WalletConnect events. We boot the SignClient lazily on
-  // the first pair, but we want the proposal/request events to surface
-  // **whenever** they arrive — not just after a pair from this session.
-  // (Persisted sessions from a previous run will fire `session_request`
-  // immediately on boot once a dapp re-subscribes.)
-  useEffect(() => {
-    if (onboarding !== "complete") return;
-    if (!wcIsConfigured()) return;
-    let cancelled = false;
-    let unsub: (() => void) | undefined;
-    void (async () => {
-      try {
-        await wcInit();
-        if (cancelled) return;
-        unsub = wcSubscribe((e) => {
-          if (cancelled) return;
-          if (e.kind === "session_proposal") {
-            setWcSubject({ kind: "proposal", proposal: e.proposal });
-          } else if (e.kind === "session_request") {
-            setWcSubject({ kind: "request", request: e.request });
-          } else if (e.kind === "session_delete" || e.kind === "session_expire") {
-            // Don't auto-pop; the Sessions screen refreshes on open.
-          }
-        });
-      } catch (cause) {
-        console.warn("wc init/subscribe failed", cause);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      unsub?.();
-    };
-  }, [onboarding]);
-
   // Auto-clear toast after a few seconds.
   useEffect(() => {
     if (!toast) return;
@@ -338,7 +266,6 @@ export default function App() {
 
   const openOperation = (req: OperationRequest) => setOperation(req);
   const closeOperation = () => setOperation(null);
-  const closeWcSheet = () => setWcSubject(null);
 
   const openScanner = () => setScannerOpen(true);
   const closeScanner = () => setScannerOpen(false);
@@ -424,9 +351,6 @@ export default function App() {
       {tab === "more" && more === "menu" && <MoreMenu setMore={setMore} />}
       {tab === "more" && more === "keys" && <Keys openOperation={openOperation} />}
       {tab === "more" && more === "audit" && <Audit />}
-      {tab === "more" && more === "sessions" && (
-        <Sessions onAddSession={openScanner} />
-      )}
       {tab === "more" && more === "settings" && (
         <Settings
           go={(route: SettingsRoute) => {
@@ -458,7 +382,7 @@ export default function App() {
         <About onClose={() => setMore("settings")} />
       )}
 
-      {!operation && !wcSubject && !scannerOpen && (
+      {!operation && !scannerOpen && (
         <nav className="mw-tabbar" aria-label="Primary">
           {TABS.map((t) => (
             <button
@@ -480,7 +404,6 @@ export default function App() {
       )}
 
       <OperationsDrawer request={operation} onClose={closeOperation} />
-      <WalletConnectSheet subject={wcSubject} onClose={closeWcSheet} />
       {scannerOpen && (
         <QrScanner onResult={handleScan} onClose={closeScanner} />
       )}
@@ -552,27 +475,6 @@ function MoreMenu({ setMore }: { setMore: (s: MoreScreen) => void }) {
         </button>
       </div>
 
-      <div className="mw-card">
-        <div className="mw-card__head">
-          <h3>Connections</h3>
-        </div>
-        <button
-          className="mw-row"
-          style={{ width: "100%", textAlign: "left" }}
-          onClick={() => setMore("sessions")}
-        >
-          <div className="mw-row__icon">
-            <Icon name="qr" size={14} />
-          </div>
-          <div>
-            <div className="mw-row__name">WalletConnect</div>
-            <div className="mw-row__sub">Active sessions and pairing</div>
-          </div>
-          <div className="mw-row__right">
-            <Icon name="chev" size={14} />
-          </div>
-        </button>
-      </div>
 
       <div className="mw-card">
         <div className="mw-card__head">
@@ -614,7 +516,6 @@ function tabTitle(tab: Tab, more: MoreScreen): string {
     case "more":
       if (more === "keys") return "Keys";
       if (more === "audit") return "Audit";
-      if (more === "sessions") return "WalletConnect";
       if (more === "settings") return "Settings";
       if (more === "settings/contacts") return "Contacts";
       if (more === "settings/reveal-phrase") return "Recovery phrase";
