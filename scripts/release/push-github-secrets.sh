@@ -29,7 +29,7 @@ push() {
         echo "skip $secret_name (vault $vault_key empty)"
         return
     fi
-    printf '%s' "$val" | gh secret set "$secret_name" --repo "$REPO_SLUG" --body -
+    printf '%s' "$val" | gh secret set "$secret_name" --repo "$REPO_SLUG"
     echo "✓ pushed $secret_name from $vault_key"
 }
 
