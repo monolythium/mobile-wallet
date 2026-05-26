@@ -88,10 +88,10 @@ export function Home({
                 kind: "stake",
                 title: "Stake with cluster",
                 summary:
-                  "Delegate LYTH to a DVT cluster. Unbonding takes 21 days.",
+                  "Delegate LYTH to a DVT cluster. Liquid stake — exit any time, no lockup.",
                 details: [
                   { k: "Cluster", v: "(picker coming soon)" },
-                  { k: "Unbond", v: "21 days" },
+                  { k: "Exit", v: "Instant" },
                 ],
                 confirmLabel: "Coming soon",
               })
