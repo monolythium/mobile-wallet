@@ -30,7 +30,7 @@ interface Turn {
 const SEED: Turn[] = [
   {
     role: "wallet",
-    text: "Hi Nayiem. I can answer questions about your balances, recent activity, and cluster. I can draft transfers, but you always sign on this device.",
+    text: "I can answer questions about your balances, recent activity, and cluster. I can draft transfers, but you always sign on this device.",
   },
 ];
 

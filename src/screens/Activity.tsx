@@ -121,7 +121,7 @@ function ActivityRow({ entry }: { entry: AddressActivityEntry }) {
         <div className="mw-row__sub">
           Block {entry.blockHeight.toString()} ·{" "}
           {entry.counterparty
-            ? shortAddr(entry.counterparty)
+            ? shortAddr(displayCounterparty(entry.counterparty))
             : entry.cluster !== null
               ? `cluster ${entry.cluster}`
               : "—"}
@@ -149,4 +149,18 @@ function ActivityRow({ entry }: { entry: AddressActivityEntry }) {
 function shortAddr(s: string): string {
   if (s.length <= 14) return s;
   return `${s.slice(0, 8)}…${s.slice(-6)}`;
+}
+
+// Chain returns raw 0x… hex counterparties. Convert to the user-facing
+// mono1… bech32m form before display; fall back to the original string
+// if it isn't a recognisable hex address (e.g. cluster id, contract).
+function displayCounterparty(s: string): string {
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) {
+    try {
+      return addressToTypedBech32("user", s);
+    } catch {
+      return s;
+    }
+  }
+  return s;
 }

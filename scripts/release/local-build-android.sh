@@ -22,12 +22,14 @@ fi
 pnpm install --frozen-lockfile
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
-# 2. Init + apply brand icons + patch signing
+# 2. Init + apply brand icons + patch signing + patch Android manifest
 rm -rf src-tauri/gen/android
 pnpm tauri android init
 pnpm tauri icon src-tauri/icons/icon.png
 python3 .github/scripts/patch-gradle-signing.py \
     src-tauri/gen/android/app/build.gradle.kts
+python3 .github/scripts/patch-android-manifest.py \
+    src-tauri/gen/android/app/src/main/AndroidManifest.xml
 
 # 3. Stage upload keystore from vault
 "$VAULT" get mono/app/mobile-wallet-upload-keystore-base64 | base64 -d \

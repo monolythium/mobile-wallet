@@ -238,6 +238,11 @@ jobs:
       - name: Apply brand icons (must follow tauri android init)
         run: pnpm tauri icon src-tauri/icons/icon.png
 
+      - name: Patch AndroidManifest with camera permission
+        run: |
+          python3 .github/scripts/patch-android-manifest.py \
+            src-tauri/gen/android/app/src/main/AndroidManifest.xml
+
       - name: Decode upload keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
