@@ -21,7 +21,6 @@ import {
   RpcClient,
   addressToTypedBech32,
 } from "@monolythium/core-sdk";
-import { MonolythiumProvider } from "@monolythium/core-sdk/ethers";
 import { previewMaxFeeLyth, sendLyth } from "../send";
 import {
   pqm1MnemonicToMlDsa65Backend,
@@ -81,8 +80,7 @@ function buildMockFetch(observed: CapturedCall[]): typeof fetch {
 function installProvider(observed: CapturedCall[]) {
   const fetchFn = buildMockFetch(observed);
   const rpc = new RpcClient("http://test", { fetch: fetchFn });
-  const provider = new MonolythiumProvider(rpc);
-  setProviderForTest(provider);
+  setProviderForTest(rpc);
 }
 
 afterEach(() => {
