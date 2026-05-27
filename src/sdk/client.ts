@@ -1,25 +1,21 @@
-// Chain-IO seam for the mobile wallet.
+// Chain-IO seam for the mobile wallet (post-ethers).
 //
-// We construct a single `MonolythiumProvider` (the ethers v6 shim that
-// `@monolythium/core-sdk` ships as of Stage 3 of the SDK roadmap) so every
-// chain read AND every signed broadcast share one transport, one network
-// registration, and one error-shape contract. Ethers callers
-// (`provider.getBlockNumber`, `provider.broadcastTransaction`) flow
-// straight through; native callers can still reach `lyth_*` methods via
-// `provider.rpcClient.call(...)`.
+// Mono-core-sdk 0.3.1 dropped the `MonolythiumProvider` ethers shim
+// alongside the no-EVM chain retirement (mono-core b2f0c498). The
+// wallet now talks to a plain SDK `RpcClient` instance; ethers-shaped
+// callers (block/balance/network) go through native `eth_*` /
+// `lyth_*` reads on the RpcClient directly.
 //
-// `mono-core-sdk` is the single seam — screens never construct an
-// `RpcClient` directly (per workspace CLAUDE §6).
+// `mono-core-sdk` is still the single seam — screens never construct
+// an `RpcClient` of their own.
 
 import {
   LYTHOSHI_PER_LYTH,
+  RpcClient,
   SdkError,
   getRpcEndpoints,
+  type RpcClientOptions,
 } from "@monolythium/core-sdk";
-import {
-  MonolythiumProvider,
-  type MonolythiumProviderOptions,
-} from "@monolythium/core-sdk/ethers";
 
 /**
  * Default RPC endpoint. Honors `VITE_MONO_RPC_URL` at build time so a
@@ -35,52 +31,50 @@ function defaultEndpoint(): string {
   return getRpcEndpoints("testnet-69420")[0]?.url ?? "http://localhost:8548";
 }
 
-let _provider: MonolythiumProvider | null = null;
+let _client: RpcClient | null = null;
 
 /**
- * Lazily-constructed singleton ethers `MonolythiumProvider`. The shim
- * registers the `monolythium-testnet` network with ethers' global
- * registry on first use; subsequent calls reuse the same instance and
- * the same underlying `RpcClient` transport.
+ * Lazily-constructed singleton `RpcClient`. First call constructs;
+ * subsequent calls reuse the same instance + transport. A thin shim
+ * exposes `.rpcClient` self-reference so existing consumers that wrote
+ * `getProvider().rpcClient.<method>` keep compiling unchanged after
+ * the ethers-shim removal — the property points at the client itself.
  */
-export function getProvider(
-  options: MonolythiumProviderOptions = {},
-): MonolythiumProvider {
-  if (_provider === null) {
-    _provider = new MonolythiumProvider(defaultEndpoint(), {
+export interface ProviderHandle {
+  rpcClient: RpcClient;
+}
+
+export function getProvider(options: RpcClientOptions = {}): ProviderHandle {
+  if (_client === null) {
+    _client = new RpcClient(defaultEndpoint(), {
       headers: {
-        "x-mono-client": "monolythium-wallet-mobile/0.0.1",
+        "x-mono-client": "monolythium-wallet-mobile/0.1.2",
       },
       ...options,
     });
   }
-  return _provider;
+  return { rpcClient: _client };
 }
 
 /**
  * Reset the singleton — used by tests so each case can stand up its own
- * provider with a stub `fetch`. Production code never calls this.
+ * client with a stub `fetch`. Production code never calls this.
  */
 export function resetProviderForTest(): void {
-  _provider = null;
+  _client = null;
 }
 
 /**
- * Inject a fully-constructed `MonolythiumProvider` as the singleton.
+ * Inject a fully-constructed `RpcClient` as the singleton.
  * Test-only; production code goes through `getProvider()` and lets the
  * lazy initializer pick up `VITE_MONO_RPC_URL`.
  */
-export function setProviderForTest(provider: MonolythiumProvider): void {
-  _provider = provider;
+export function setProviderForTest(client: RpcClient): void {
+  _client = client;
 }
 
 /**
- * Lightweight chain status used by the Home screen halo. The shape
- * preserves the previous `fetchChainStatus()` contract; only the types
- * widened — `chainId` and `blockNumber` are now `bigint` to match the
- * SDK 0.1.0 ethers shim (which exposes `Network.chainId: bigint` and
- * `getBlockNumber(): Promise<number>` — wrapped to bigint here so the
- * UI never sees a mixed numeric type).
+ * Lightweight chain status used by the Home screen halo.
  */
 export interface ChainStatus {
   chainId: bigint;
@@ -94,15 +88,15 @@ export interface ChainStatus {
  * render a degraded state without guessing.
  */
 export async function fetchChainStatus(): Promise<ChainStatus> {
-  const provider = getProvider();
-  const [network, blockNumber] = await Promise.all([
-    provider.getNetwork(),
-    provider.getBlockNumber(),
+  const rpc = getProvider().rpcClient;
+  const [chainId, blockNumber] = await Promise.all([
+    rpc.ethChainId(),
+    rpc.ethBlockNumber(),
   ]);
   return {
-    chainId: network.chainId,
-    blockNumber: BigInt(blockNumber),
-    endpoint: provider.rpcClient.endpoint,
+    chainId,
+    blockNumber,
+    endpoint: rpc.endpoint,
   };
 }
 
@@ -125,19 +119,21 @@ export interface ChainSnapshot {
 }
 
 export async function loadChainSnapshot(address: string): Promise<ChainSnapshot> {
-  const provider = getProvider();
-  const endpoint = provider.rpcClient.endpoint;
+  const rpc = getProvider().rpcClient;
+  const endpoint = rpc.endpoint;
   try {
-    const [network, blockHeight, balanceLythoshi] = await Promise.all([
-      provider.getNetwork(),
-      provider.getBlockNumber(),
-      provider.getBalance(address),
+    const [chainId, blockHeight, balanceProof] = await Promise.all([
+      rpc.ethChainId(),
+      rpc.ethBlockNumber(),
+      rpc.ethGetBalance(address),
     ]);
-    const lythoshiHex = `0x${balanceLythoshi.toString(16)}`;
+    // ethGetBalance returns an AccountProofResponse { blockNumber, proof,
+    // stateRoot, value } where `value` is the lythoshi hex quantity.
+    const lythoshiHex = balanceProof.value ?? "0x0";
     return {
       endpoint,
-      chainId: network.chainId,
-      blockHeight: BigInt(blockHeight),
+      chainId,
+      blockHeight,
       balanceLythoshiHex: lythoshiHex,
       balanceLyth: lythoshiHexToLyth(lythoshiHex),
       error: null,
@@ -155,19 +151,12 @@ export async function loadChainSnapshot(address: string): Promise<ChainSnapshot>
 }
 
 /**
- * Normalize whatever the ethers/SDK transport surfaced into a plain
- * `{ kind, message }` pair the UI can render. Ethers wraps SDK errors in
- * its own envelope, so we unwrap one level; we don't try to be smarter.
+ * Normalize whatever the SDK transport surfaced into a plain
+ * `{ kind, message }` pair the UI can render.
  */
 function unwrapError(cause: unknown): { kind: string; message: string } {
   if (cause instanceof SdkError) {
     return { kind: cause.kind, message: cause.message };
-  }
-  if (cause && typeof cause === "object" && "error" in cause) {
-    const inner = (cause as { error?: unknown }).error;
-    if (inner instanceof SdkError) {
-      return { kind: inner.kind, message: inner.message };
-    }
   }
   const message = (cause as Error)?.message ?? String(cause);
   return { kind: "unknown", message };
