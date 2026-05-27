@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@monolythium/core-sdk':
-        specifier: 0.3.4
-        version: 0.3.4
+        specifier: 0.3.7
+        version: 0.3.7
       '@noble/hashes':
         specifier: 2.2.0
         version: 2.2.0
@@ -355,8 +355,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@monolythium/core-sdk@0.3.4':
-    resolution: {integrity: sha512-I+JJx6wqqF1/ZjfsCOE0f3bC601C3FnXAt1njP6yPnuT7T7wcZxzgGhApcWLdPqOalaJ/4SOjttsc+eI+3e8sQ==}
+  '@monolythium/core-sdk@0.3.7':
+    resolution: {integrity: sha512-8E2HIECZLJnfta/lo9oICkgjyTNNbsjCpoLbZ9gO+Gu2/75vt8Mhd0DTsGTV2tBuQZXgso8O8xeiFlQ/F28KsQ==}
     engines: {node: '>=22'}
 
   '@noble/ciphers@2.2.0':
@@ -1425,7 +1425,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@monolythium/core-sdk@0.3.4':
+  '@monolythium/core-sdk@0.3.7':
     dependencies:
       '@noble/ciphers': 2.2.0
       '@noble/curves': 2.2.0
