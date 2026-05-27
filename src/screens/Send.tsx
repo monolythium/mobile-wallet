@@ -12,6 +12,7 @@ import {
   typedBech32ToAddress,
 } from "@monolythium/core-sdk";
 import type { OperationRequest } from "../components/OperationsDrawer";
+import { ContactsPickerSheet } from "../components/ContactsPickerSheet";
 import { getProvider } from "../sdk/client";
 import { bumpContactLastUsed } from "../sdk/contacts";
 import { previewMaxFeeLyth, sendLyth } from "../sdk/send";
@@ -36,6 +37,11 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
   const [feePreview, setFeePreview] = useState<string | null>(null);
   const [feeError, setFeeError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Saved contact name resolved after a pick. Cleared on any manual
+  // edit of the recipient field so a stale name never travels with a
+  // fresh address.
+  const [resolvedContactName, setResolvedContactName] = useState<string | null>(null);
 
   const selfBech32m = useMemo(
     () => addressToTypedBech32("user", selfAddress),
@@ -91,7 +97,10 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
 
     const toBech32m = recipient.trim();
     const amountLyth = amount.trim();
-    const summary = `Send ${amountLyth} LYTH to ${shortAddr(toBech32m)} on the Monolythium testnet.`;
+    const toLabel = resolvedContactName
+      ? `${resolvedContactName} (${shortAddr(toBech32m)})`
+      : shortAddr(toBech32m);
+    const summary = `Send ${amountLyth} LYTH to ${toLabel} on the Monolythium testnet.`;
 
     openOperation({
       kind: "send",
@@ -99,6 +108,9 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
       summary,
       details: [
         { k: "From", v: selfBech32m, mono: true },
+        ...(resolvedContactName
+          ? [{ k: "Contact", v: resolvedContactName }]
+          : []),
         { k: "To", v: toBech32m, mono: true },
         { k: "Amount", v: `${amountLyth} LYTH`, mono: true },
         ...(feePreview !== null
@@ -151,17 +163,49 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
           </span>
         </p>
 
-        <label style={fieldLabel}>Recipient</label>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 6,
+          }}
+        >
+          <label style={{ ...fieldLabel, marginBottom: 0 }}>Recipient</label>
+          <button
+            type="button"
+            className="mw-btn"
+            onClick={() => setPickerOpen(true)}
+            style={{ padding: "5px 10px", fontSize: 11 }}
+          >
+            From contacts
+          </button>
+        </div>
         <input
           type="text"
           autoCapitalize="none"
           spellCheck={false}
           value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
+          onChange={(e) => {
+            setRecipient(e.target.value);
+            if (resolvedContactName !== null) setResolvedContactName(null);
+          }}
           placeholder={`${USER_HRP}1…`}
           aria-label="Recipient typed bech32m address"
           style={inputStyle}
         />
+        {resolvedContactName && (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 11,
+              color: "var(--fg-400)",
+              letterSpacing: "0.04em",
+            }}
+          >
+            Saved as <strong style={{ color: "var(--fg-200)" }}>{resolvedContactName}</strong>
+          </div>
+        )}
 
         <label style={{ ...fieldLabel, marginTop: 12 }}>Amount (LYTH)</label>
         <input
@@ -227,6 +271,18 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
           Review
         </button>
       </div>
+
+      {pickerOpen && (
+        <ContactsPickerSheet
+          onSelect={(contact) => {
+            setRecipient(contact.bech32m);
+            setResolvedContactName(contact.name);
+            setValidationError(null);
+            setPickerOpen(false);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }
