@@ -32,6 +32,7 @@ import {
   addressHexFromMnemonic,
   VaultMnemonicError,
 } from "../sdk/vault";
+import { generatePqm1Mnemonic } from "@monolythium/core-sdk/crypto";
 
 interface Props {
   onDone: () => void;
@@ -130,15 +131,35 @@ export function Onboarding({ onDone }: Props) {
       return;
     }
 
-    setStep("deriving");
+    if (isImport) {
+      // Import path: phrase already collected, persist now. The user
+      // explicitly already has the phrase, so there's no
+      // abandon-after-show window to mitigate.
+      if (!mnemonic) {
+        setError("Recovery phrase missing — re-enter it.");
+        setStep("import-phrase");
+        return;
+      }
+      await persistAndFinish(mnemonic);
+      return;
+    }
 
-    let mnem: string;
+    // Create path: generate the mnemonic in component state ONLY.
+    // Nothing persists until verify-success — porting browser-wallet
+    // 2f83e28 (same persist-before-verify bug existed here).
     try {
-      const result = await bootstrapVault(
-        password,
-        isImport && mnemonic ? { importMnemonic: mnemonic } : {},
-      );
-      mnem = result.mnemonic;
+      const fresh = generatePqm1Mnemonic();
+      setMnemonic(fresh);
+      setStep("show-phrase");
+    } catch (cause) {
+      setError(`Could not generate phrase: ${(cause as Error)?.message ?? "unknown"}`);
+    }
+  };
+
+  const persistAndFinish = async (mnemonicToSeal: string) => {
+    setStep("deriving");
+    try {
+      await bootstrapVault(password, { importMnemonic: mnemonicToSeal });
     } catch (cause) {
       const err = cause as AuthError;
       if (err?.kind === "Unavailable") {
@@ -154,21 +175,11 @@ export function Onboarding({ onDone }: Props) {
       setStep("password");
       return;
     }
-    // Drop the password from state as soon as the vault is sealed.
+    // Drop password + mnemonic from state as soon as the vault is sealed.
     setPassword("");
     setConfirm("");
-
-    if (isImport) {
-      // Imported wallets skip show + verify — the user already has the
-      // phrase by definition. Drop the mnemonic from state and go
-      // straight to biometric enrolment.
-      setMnemonic(null);
-      await enrolBiometricAndFinish();
-      return;
-    }
-
-    setMnemonic(mnem);
-    setStep("show-phrase");
+    setMnemonic(null);
+    await enrolBiometricAndFinish();
   };
 
   const enrolBiometricAndFinish = async () => {
@@ -195,10 +206,15 @@ export function Onboarding({ onDone }: Props) {
   };
 
   const onPhraseVerified = async () => {
-    // The mnemonic was only retained to render show + verify. Drop the
-    // reference now that the challenge is solved.
-    setMnemonic(null);
-    await enrolBiometricAndFinish();
+    // Persist NOW — only after the user has correctly placed the
+    // missing words. Browser-wallet 2f83e28 fixed the same
+    // persist-before-verify bug; this is the mobile port.
+    if (!mnemonic) {
+      setError("Lost the recovery phrase — restart onboarding.");
+      setStep("intro");
+      return;
+    }
+    await persistAndFinish(mnemonic);
   };
 
   return (

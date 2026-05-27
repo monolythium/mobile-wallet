@@ -9,8 +9,10 @@ interface VerifyPhraseProps {
   onBack?: () => void;
 }
 
-// 6 hidden positions × ~11-word bank ≈ 10^6 random-guess hit rate.
-const HIDDEN_COUNT = 6;
+// 3 hidden positions × ~8-word bank — gates "did the user actually
+// write it down" without dragging the flow. Matches browser-wallet's
+// 0439943 tuning.
+const HIDDEN_COUNT = 3;
 const DISTRACTOR_COUNT = 5;
 
 function shuffle<T>(arr: readonly T[]): T[] {
