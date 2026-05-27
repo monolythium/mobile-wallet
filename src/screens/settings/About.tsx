@@ -1,14 +1,41 @@
-// About — build + chain info. Static; no biometric prompts.
+// About — build + chain info. Static fields mixed with one live read
+// (testnet chain-registry from GitHub) so the genesis hash + binary
+// sha track the latest registry push without needing a new SDK
+// publish + wallet bump.
 
-import { MONOLYTHIUM_TESTNET_CHAIN_ID, MONOLYTHIUM_TESTNET_NETWORK_NAME } from "@monolythium/core-sdk";
+import { useEffect, useState } from "react";
+import {
+  MONOLYTHIUM_TESTNET_CHAIN_ID,
+  MONOLYTHIUM_TESTNET_NETWORK_NAME,
+  type ChainInfo,
+} from "@monolythium/core-sdk";
+import { fetchLiveTestnetRegistry } from "../../sdk/live-registry";
 
 interface Props {
   onClose: () => void;
 }
 
-const APP_VERSION = "0.0.1";
+const APP_VERSION = "0.1.2";
+
+function shortHex(s: string, head = 10, tail = 6): string {
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${s.slice(-tail)}`;
+}
 
 export function About({ onClose }: Props) {
+  const [registry, setRegistry] = useState<ChainInfo | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const info = await fetchLiveTestnetRegistry();
+      if (!cancelled && info !== null) setRegistry(info);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="mw-scroll">
       <div className="mw-card">
@@ -42,6 +69,22 @@ export function About({ onClose }: Props) {
         <div className="mw-kv">
           <div className="k">Wire format</div>
           <div className="v">ML-KEM-768 encrypted envelope</div>
+        </div>
+        <div className="mw-kv">
+          <div className="k">Registry genesis</div>
+          <div
+            className="v"
+            style={{ fontFamily: "var(--f-mono)", fontSize: 12 }}
+            title={registry?.genesis_hash ?? ""}
+          >
+            {registry ? shortHex(registry.genesis_hash) : "fetching…"}
+          </div>
+        </div>
+        <div className="mw-kv">
+          <div className="k">Binary sha</div>
+          <div className="v" style={{ fontFamily: "var(--f-mono)", fontSize: 12 }}>
+            {registry?.binary_sha ?? "fetching…"}
+          </div>
         </div>
       </div>
 
