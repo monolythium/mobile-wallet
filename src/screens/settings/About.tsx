@@ -15,7 +15,7 @@ interface Props {
   onClose: () => void;
 }
 
-const APP_VERSION = "0.1.2";
+const APP_VERSION = "0.1.3";
 
 function shortHex(s: string, head = 10, tail = 6): string {
   if (s.length <= head + tail + 1) return s;
