@@ -33,6 +33,7 @@ import {
   VaultMnemonicError,
 } from "../sdk/vault";
 import { generatePqm1Mnemonic } from "@monolythium/core-sdk/crypto";
+import { explainImportError } from "../lib/import-error";
 
 interface Props {
   onDone: () => void;
@@ -102,11 +103,11 @@ export function Onboarding({ onDone }: Props) {
     try {
       addressHexFromMnemonic(cleaned);
     } catch (cause) {
-      if (cause instanceof VaultMnemonicError) {
-        setImportError(cause.message);
-        return;
-      }
-      setImportError((cause as Error)?.message ?? "phrase rejected");
+      const msg =
+        cause instanceof VaultMnemonicError
+          ? cause.message
+          : (cause as Error)?.message ?? "phrase rejected";
+      setImportError(explainImportError(msg));
       return;
     }
     setMnemonic(cleaned);
