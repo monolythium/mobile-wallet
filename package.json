@@ -1,7 +1,7 @@
 {
   "name": "@monolythium/mobile-wallet",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Monolythium mobile wallet (Tauri 2 mobile, iOS + Android, React 19)",
   "license": "Apache-2.0",
