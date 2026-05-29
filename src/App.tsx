@@ -33,6 +33,8 @@ import { Settings, type SettingsRoute } from "./screens/Settings";
 import { RevealPhrase } from "./screens/settings/RevealPhrase";
 import { ResetWallet } from "./screens/settings/ResetWallet";
 import { About } from "./screens/settings/About";
+import { Experimental } from "./screens/settings/Experimental";
+import { useExperimentalV5 } from "./sdk/use-feature-flags";
 import { fetchChainStatus, type ChainStatus } from "./sdk/client";
 import {
   buildOfflineWalletReadiness,
@@ -68,7 +70,8 @@ type MoreScreen =
   | "settings/contacts"
   | "settings/reveal-phrase"
   | "settings/reset-wallet"
-  | "settings/about";
+  | "settings/about"
+  | "settings/experimental";
 
 type OnboardingState = "checking" | "needed" | "complete";
 
@@ -85,6 +88,9 @@ export default function App() {
   const [onboarding, setOnboarding] = useState<OnboardingState>("checking");
   const [selfAddress, setSelfAddress] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // Experimental v5 surfaces (Agents, Bridge, autovote) are opt-in and OFF
+  // by default. When off, the More menu and screens below stay hidden.
+  const experimentalV5 = useExperimentalV5();
 
   // Probe the platform keystore once on mount. If a secret is present the
   // device has been onboarded; otherwise show the onboarding screen first.
@@ -352,13 +358,15 @@ export default function App() {
         <Stake selfAddress={selfAddress} openOperation={openOperation} />
       )}
       {tab === "ask" && <Ask openOperation={openOperation} />}
-      {tab === "more" && more === "menu" && <MoreMenu setMore={setMore} />}
+      {tab === "more" && more === "menu" && (
+        <MoreMenu setMore={setMore} experimentalV5={experimentalV5} />
+      )}
       {tab === "more" && more === "keys" && <Keys openOperation={openOperation} />}
       {tab === "more" && more === "audit" && <Audit />}
-      {tab === "more" && more === "bridge" && (
+      {tab === "more" && more === "bridge" && experimentalV5 && (
         <Bridge openOperation={openOperation} />
       )}
-      {tab === "more" && more === "agents" && (
+      {tab === "more" && more === "agents" && experimentalV5 && (
         <Agents selfAddress={selfAddress} openOperation={openOperation} />
       )}
       {tab === "more" && more === "settings" && (
@@ -390,6 +398,9 @@ export default function App() {
       )}
       {tab === "more" && more === "settings/about" && (
         <About onClose={() => setMore("settings")} />
+      )}
+      {tab === "more" && more === "settings/experimental" && (
+        <Experimental onClose={() => setMore("settings")} />
       )}
 
       {!operation && !scannerOpen && (
@@ -444,7 +455,13 @@ function TopBar({
   );
 }
 
-function MoreMenu({ setMore }: { setMore: (s: MoreScreen) => void }) {
+function MoreMenu({
+  setMore,
+  experimentalV5,
+}: {
+  setMore: (s: MoreScreen) => void;
+  experimentalV5: boolean;
+}) {
   return (
     <div className="mw-scroll">
       <div className="mw-card">
@@ -490,42 +507,46 @@ function MoreMenu({ setMore }: { setMore: (s: MoreScreen) => void }) {
         <div className="mw-card__head">
           <h3>Wallet</h3>
         </div>
-        <button
-          className="mw-row"
-          style={{ width: "100%", textAlign: "left" }}
-          onClick={() => setMore("agents")}
-        >
-          <div className="mw-row__icon">
-            <Icon name="key" size={14} />
-          </div>
-          <div>
-            <div className="mw-row__name">Agents</div>
-            <div className="mw-row__sub">
-              Sub-account spending policies
-            </div>
-          </div>
-          <div className="mw-row__right">
-            <Icon name="chev" size={14} />
-          </div>
-        </button>
-        <button
-          className="mw-row"
-          style={{ width: "100%", textAlign: "left" }}
-          onClick={() => setMore("bridge")}
-        >
-          <div className="mw-row__icon">
-            <Icon name="shield" size={14} />
-          </div>
-          <div>
-            <div className="mw-row__name">Bridge</div>
-            <div className="mw-row__sub">
-              Cross-chain route risk disclosure
-            </div>
-          </div>
-          <div className="mw-row__right">
-            <Icon name="chev" size={14} />
-          </div>
-        </button>
+        {experimentalV5 && (
+          <>
+            <button
+              className="mw-row"
+              style={{ width: "100%", textAlign: "left" }}
+              onClick={() => setMore("agents")}
+            >
+              <div className="mw-row__icon">
+                <Icon name="key" size={14} />
+              </div>
+              <div>
+                <div className="mw-row__name">Agents</div>
+                <div className="mw-row__sub">
+                  Sub-account spending policies
+                </div>
+              </div>
+              <div className="mw-row__right">
+                <Icon name="chev" size={14} />
+              </div>
+            </button>
+            <button
+              className="mw-row"
+              style={{ width: "100%", textAlign: "left" }}
+              onClick={() => setMore("bridge")}
+            >
+              <div className="mw-row__icon">
+                <Icon name="shield" size={14} />
+              </div>
+              <div>
+                <div className="mw-row__name">Bridge</div>
+                <div className="mw-row__sub">
+                  Cross-chain route risk disclosure
+                </div>
+              </div>
+              <div className="mw-row__right">
+                <Icon name="chev" size={14} />
+              </div>
+            </button>
+          </>
+        )}
         <button
           className="mw-row"
           style={{ width: "100%", textAlign: "left" }}
