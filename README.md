@@ -8,13 +8,13 @@
 
 ## Status: preview
 
-Functional cross-platform shell with real Rust crypto, biometric integration, and WalletConnect v2 pairing — but not yet production-grade. Set expectations before adopting:
+Functional cross-platform shell with real Rust crypto, biometric integration, and deep-link pairing — but not yet production-grade. Set expectations before adopting:
 
 - **Chain target is testnet.** Monolythium mainnet has not launched. Anything you connect to here runs against the public testnet today; mainnet activation is gated on separate protocol milestones.
 - **Native iOS / Android projects under `src-tauri/gen/` are not committed.** `pnpm tauri ios init` and `pnpm tauri android init` are one-time host-side bootstrap steps that produce regenerable per-host paths and raw Xcode / Gradle artifacts (intentionally gitignored). You initialize them locally on your build host.
 - **No TestFlight or Play Store internal-testing build is published.** Until a signed release ships, the only install path is "clone, init the native projects, run a debug build to your device/simulator."
-- **External builds need a sibling SDK checkout for now.** `package.json` consumes `@monolythium/core-sdk` from `file:../mono-core-sdk/packages/ts`. The SDK is public ([`monolythium/mono-core-sdk`](https://github.com/monolythium/mono-core-sdk), `@monolythium/core-sdk@0.1.0` on npm) — but master here uses SDK exports ahead of the published `0.1.0`. Until the next SDK release, `pnpm install` requires cloning `monolythium/mono-core-sdk` as a sibling directory.
-- **WalletConnect v2 pairing is scaffolded; signing surfaces still iterating.** The pairing surface and the deep-link router are live; per-method approval UX is converging.
+- **SDK is consumed from npm.** `package.json` pins `@monolythium/core-sdk` to the exact published version `0.3.10` from npm ([`monolythium/mono-core-sdk`](https://github.com/monolythium/mono-core-sdk)). `pnpm install` resolves it directly — no sibling checkout required.
+- **Deep-link pairing is the pairing path; signing surfaces still iterating.** The deep-link router is live for incoming send / stake / pairing requests from a paired desktop or browser; per-method approval UX is converging.
 
 Watch this repo for the first non-preview tag before treating any build as production-grade.
 
@@ -29,13 +29,12 @@ The wallet:
 - Holds Monolythium keys in a **password-derived KEK + AES-encrypted vault**, with the vault entry sealed in the **platform keychain** (iOS Keychain Services / Android Keystore).
 - Gates every signing operation behind a **biometric prompt** (Face ID / Touch ID / Android BiometricPrompt).
 - Routes every destructive action through an **Operations drawer** with a preview / confirm step (no silent signing).
-- Supports **WalletConnect v2** for dapp pairing.
 - Supports **deep links** (`monolythium://...` / Universal Links / Android App Links) for incoming send / stake / pairing flows from a paired desktop or browser.
 - Reads chain state through `@monolythium/core-sdk` against the SDK chain-registry endpoints.
 
 ## Who this is for
 
-End users and mobile-first traders who want to hold and move MNLX from their phone, with biometric-gated signing and an Operations drawer that previews every destructive action before it leaves the device.
+End users and mobile-first traders who want to hold and move LYTH from their phone, with biometric-gated signing and an Operations drawer that previews every destructive action before it leaves the device.
 
 ## Prerequisites
 
@@ -45,13 +44,7 @@ To inspect, audit, or develop the cross-platform layer:
 - **pnpm** 10+ (`corepack enable && corepack prepare pnpm@10 --activate`)
 - **Rust** 1.77+
 
-To complete `pnpm install` you currently also need:
-
-- A sibling **[`mono-core-sdk`](https://github.com/monolythium/mono-core-sdk) checkout** at `../mono-core-sdk`. The SDK is public — `@monolythium/core-sdk@0.1.0` is on npm — but master here uses exports ahead of the published `0.1.0`. Until the next SDK release, the `file:` path in `package.json` requires the sibling. Clone with:
-
-  ```bash
-  git clone https://github.com/monolythium/mono-core-sdk.git ../mono-core-sdk
-  ```
+`pnpm install` resolves all dependencies from npm — including **[`@monolythium/core-sdk`](https://github.com/monolythium/mono-core-sdk)**, pinned to the exact published version `0.3.10`. No sibling checkout is required.
 
 To build for a device or simulator:
 
@@ -77,11 +70,11 @@ less src/    # navigate to the keystore + KDF + AES vault files
 # Read the Operations drawer's preview/confirm contract
 less src/    # navigate to the operations module
 
-# Read the WalletConnect v2 pairing surface
-less src/    # navigate to the walletconnect module
+# Read the deep-link pairing router
+less src/    # navigate to the deep-link module (src/sdk/deeplink.ts)
 ```
 
-With the sibling `mono-core-sdk` checkout in place:
+To run the gates:
 
 ```bash
 pnpm install
@@ -114,8 +107,7 @@ mobile-wallet/
 │   ├── App.tsx, main.tsx
 │   ├── views / pages / components / etc.
 │   └── (keystore, KDF, AES vault, biometric auth bridge,
-│        Operations drawer, WalletConnect v2 pairing surface,
-│        deep-link router, SDK consumption)
+│        Operations drawer, deep-link pairing router, SDK consumption)
 ├── src-tauri/                    # Tauri 2 Rust backend
 │   ├── tauri.conf.json
 │   ├── src/main.rs, src/lib.rs
@@ -141,8 +133,7 @@ See [`docs/wallet-tier-integration.md`](./docs/wallet-tier-integration.md) for t
 
 - **`@noble/hashes`** for the KDF + AES-GCM vault encryption (sibling of the desktop wallet's crypto module).
 - **Platform keychain** for vault storage (iOS Keychain Services with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`; Android Keystore with hardware-backed strongbox when available).
-- **`@walletconnect/sign-client`** + **`@walletconnect/utils`** for dapp pairing (WalletConnect v2).
-- **`@zxing/browser`** for QR scanning (deep-link recipient capture, WC pairing URIs, wallet import).
+- **`@zxing/browser`** for QR scanning (deep-link recipient capture, wallet import).
 - **`@tauri-apps/plugin-deep-link`** for the OS-native deep-link surfaces.
 - **`@tauri-apps/plugin-store`** for non-secret app preferences.
 
@@ -167,7 +158,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md). Short version: run the four gates (`
 
 ## Security
 
-See [`SECURITY.md`](./SECURITY.md). Short version: vulnerability reports to `security@monolythium.com`, **not** the public issue tracker. The in-scope categories cover vault exfiltration, biometric bypass, Operations drawer bypass, WalletConnect request forgery, deep-link abuse, connected-site promotion, platform sandbox escape, chain-config corruption, and biometric-usage-event leaks.
+See [`SECURITY.md`](./SECURITY.md). Short version: vulnerability reports to `security@monolythium.com`, **not** the public issue tracker. The in-scope categories cover vault exfiltration, biometric bypass, Operations drawer bypass, deep-link abuse, connected-site promotion, platform sandbox escape, chain-config corruption, and biometric-usage-event leaks.
 
 ## License
 
