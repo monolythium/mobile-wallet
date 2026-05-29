@@ -41,6 +41,7 @@ import {
   makeBiometricBackendFactory,
   unlockViaBiometric,
 } from "../sdk/signer";
+import { useExperimentalV5 } from "../sdk/use-feature-flags";
 
 interface Props {
   /** Hex address (`0x…`) bound to the unlocked vault. */
@@ -79,6 +80,10 @@ export function Stake({ selfAddress, openOperation }: Props) {
   const [plan, setPlan] = useState<AutovotePlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  // Autovote planner is an experimental v5 surface, OFF by default. When off
+  // the card below is not rendered (and its diversity reads never fire), so
+  // the Stake screen renders identically to a build without autovote.
+  const showAutovote = useExperimentalV5();
 
   const refresh = useCallback(async (addr: string) => {
     setLoading(true);
@@ -327,8 +332,9 @@ export function Stake({ selfAddress, openOperation }: Props) {
         )}
       </div>
 
-      {/* Autovote — four-mode planner (§25.1). */}
-      <div className="mw-card">
+      {/* Autovote — four-mode planner (§25.1). Experimental, OFF by default. */}
+      {showAutovote && (
+        <div className="mw-card">
         <div className="mw-card__head">
           <h3>Autovote</h3>
           <div className="spacer" />
@@ -441,7 +447,8 @@ export function Stake({ selfAddress, openOperation }: Props) {
             </button>
           </div>
         )}
-      </div>
+        </div>
+      )}
 
       <div className="mw-card">
         <div className="mw-card__head">
