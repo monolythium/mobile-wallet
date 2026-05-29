@@ -27,6 +27,7 @@ import { Receive } from "./screens/Receive";
 import { Activity } from "./screens/Activity";
 import { Stake } from "./screens/Stake";
 import { Bridge } from "./screens/Bridge";
+import { Agents } from "./screens/Agents";
 import { Contacts } from "./screens/Contacts";
 import { Settings, type SettingsRoute } from "./screens/Settings";
 import { RevealPhrase } from "./screens/settings/RevealPhrase";
@@ -62,6 +63,7 @@ type MoreScreen =
   | "keys"
   | "audit"
   | "bridge"
+  | "agents"
   | "settings"
   | "settings/contacts"
   | "settings/reveal-phrase"
@@ -356,6 +358,9 @@ export default function App() {
       {tab === "more" && more === "bridge" && (
         <Bridge openOperation={openOperation} />
       )}
+      {tab === "more" && more === "agents" && (
+        <Agents selfAddress={selfAddress} openOperation={openOperation} />
+      )}
       {tab === "more" && more === "settings" && (
         <Settings
           go={(route: SettingsRoute) => {
@@ -488,6 +493,24 @@ function MoreMenu({ setMore }: { setMore: (s: MoreScreen) => void }) {
         <button
           className="mw-row"
           style={{ width: "100%", textAlign: "left" }}
+          onClick={() => setMore("agents")}
+        >
+          <div className="mw-row__icon">
+            <Icon name="key" size={14} />
+          </div>
+          <div>
+            <div className="mw-row__name">Agents</div>
+            <div className="mw-row__sub">
+              Sub-account spending policies
+            </div>
+          </div>
+          <div className="mw-row__right">
+            <Icon name="chev" size={14} />
+          </div>
+        </button>
+        <button
+          className="mw-row"
+          style={{ width: "100%", textAlign: "left" }}
           onClick={() => setMore("bridge")}
         >
           <div className="mw-row__icon">
@@ -540,6 +563,7 @@ function tabTitle(tab: Tab, more: MoreScreen): string {
       if (more === "keys") return "Keys";
       if (more === "audit") return "Audit";
       if (more === "bridge") return "Bridge";
+      if (more === "agents") return "Agents";
       if (more === "settings") return "Settings";
       if (more === "settings/contacts") return "Contacts";
       if (more === "settings/reveal-phrase") return "Recovery phrase";
