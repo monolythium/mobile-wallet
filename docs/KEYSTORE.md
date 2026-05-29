@@ -11,7 +11,7 @@ keytool -genkeypair -v \
     -alias mobile-wallet-upload \
     -keyalg RSA -keysize 4096 -validity 10950 \
     -keystore mono-mobile-wallet-upload.jks -storetype JKS \
-    -dname "CN=Mono Labs LLC, OU=Mobile, O=Mono Labs LLC, L=San Francisco, ST=CA, C=US"
+    -dname "CN=Mono Labs R&D LLC, OU=Mobile, O=Mono Labs R&D LLC, L=San Francisco, ST=CA, C=US"
 ```
 
 Record the resulting store + key passwords; you cannot recover them.

@@ -11,7 +11,6 @@ If you believe you've found a vulnerability in the mobile wallet — particularl
 - exfiltrate the encrypted vault, the password-derived KEK, the in-memory unlocked seed, the platform-keychain-stored credentials, or a recovery phrase outside the explicit reveal flow,
 - bypass the biometric authentication prompt before signing a destructive action,
 - bypass the Operations drawer's preview / approval step for any send / stake / dapp-signing flow,
-- forge or replay a WalletConnect v2 request so that a method appears approved without the user's explicit per-request consent,
 - cause a deep link (`monolythium://...` / Universal Link / Android App Link) to trigger a privileged action without confirmation,
 - promote a malicious dapp origin to the connected-sites list without explicit user approval in the popup,
 - escape the platform sandbox (read another app's files, write to system storage, read the desktop-app `~/.lyth_mcp/wallets.json` file),
@@ -39,7 +38,7 @@ Coordinated disclosure is required for any finding affecting a signed mobile rel
 - Reports requiring a malicious app already installed alongside the wallet (per-app sandbox + platform keychain isolation are the boundary).
 - Reports requiring a jailbroken / rooted device — out-of-scope by definition.
 - Reports requiring physical possession of an unlocked device.
-- Issues in upstream dependencies (`@noble/hashes`, `@walletconnect/*`, `ethers`, Tauri plugins, platform keychain wrappers) — please report those upstream and we'll pick up the fix.
+- Issues in upstream dependencies (`@noble/hashes`, `@scure/bip39`, Tauri plugins, platform keychain wrappers) — please report those upstream and we'll pick up the fix.
 - Vulnerabilities in private Monolythium components (the chain itself, etc.) — please use the contact above; we'll route internally.
 
 ## What we won't do
