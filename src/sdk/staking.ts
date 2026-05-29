@@ -1,12 +1,21 @@
 // Staking SDK seam — wraps `lyth_clusterDirectory`, `lyth_getDelegations`,
 // and the delegation-precompile (Law §5.4 / §7.6) calldata encoders.
 //
-// Delegation lives at precompile `0x…100A`. Calldata is standard
-// 4-byte selector + 32-byte ABI words:
+// Delegation lives at the precompile resolved by `delegationAddressHex()`
+// (0x…100A). Calldata is the SDK's canonical 4-byte selector + packed-word
+// encoding — NOT a hand-rolled flat-uint256 ABI. The signatures are:
 //
-//   delegate(uint256 clusterId, uint256 weightBps)
-//   undelegate(uint256 clusterId, uint256 weightBps)
-//   redelegate(uint256 srcCluster, uint256 dstCluster, uint256 weightBps)
+//   delegate(uint32 clusterId, uint16 weightBps)   — caller sends LYTH as
+//                                                     msg.value to set the
+//                                                     principal stake.
+//   undelegate(uint32 clusterId)                    — cluster only; the chain
+//                                                     appends a redemption
+//                                                     ticket (no weight arg).
+//   redelegate(uint32 src, uint32 dst, uint16 weightBps)
+//   claim()                                         — selector only.
+//
+// All encoders + the precompile address come from `@monolythium/core-sdk`
+// (delegation.ts) so the wallet never diverges from the chain ABI.
 //
 // The chain may reject the call at the precompile-gate if delegation
 // isn't activated yet on the connected network — wallets surface the
@@ -22,22 +31,20 @@ import type {
   ClusterDirectoryPageResponse,
   DelegationsResponse,
 } from "@monolythium/core-sdk";
-import { typedBech32ToAddress } from "@monolythium/core-sdk";
+import {
+  typedBech32ToAddress,
+  encodeDelegateCalldata,
+  encodeUndelegateCalldata,
+  encodeRedelegateCalldata,
+  encodeClaimCalldata,
+  delegationAddressHex,
+  DelegationPrecompileError,
+} from "@monolythium/core-sdk";
 import { getProvider } from "./client";
 
-/** Delegation precompile address (Law §5.4 / §7.6). */
-export const DELEGATION_PRECOMPILE =
-  "0x000000000000000000000000000000000000100a";
-
-/** Function selectors. Hex-pinned constants — first 4 bytes of
- *  keccak256(signature). The SDK exports the canonical signatures
- *  alongside their selectors via `DELEGATION_SELECTORS`. */
-export const STAKING_SELECTORS = {
-  delegate: "d9a34952",
-  undelegate: "634b91e3",
-  redelegate: "0e184c84",
-  claimRewards: "372500ab",
-} as const;
+/** Delegation precompile address (Law §5.4 / §7.6), resolved from the SDK
+ *  so the wallet never hard-codes a precompile literal. */
+export const DELEGATION_PRECOMPILE = delegationAddressHex();
 
 export type StakingAction = "delegate" | "undelegate" | "redelegate";
 
@@ -46,60 +53,34 @@ export interface StakingTxResult {
   innerSighashHex: string;
 }
 
-function encodeUint256(value: number | bigint): string {
-  let n: bigint;
-  if (typeof value === "bigint") n = value;
-  else {
-    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
-      throw new RangeError(`encodeUint256: not a non-negative integer (${value})`);
-    }
-    n = BigInt(value);
-  }
-  if (n < 0n) throw new RangeError("encodeUint256: negative");
-  if (n >= 1n << 256n) throw new RangeError("encodeUint256: overflow");
-  return n.toString(16).padStart(64, "0");
-}
-
+/** delegate(uint32 clusterId, uint16 weightBps) — thin wrapper over the SDK
+ *  encoder. weightBps sets the wallet-weight; the principal LYTH staked is
+ *  carried separately as `tx.value` (see {@link submitStakingTx}). */
 export function buildDelegateCalldata(
   clusterId: number,
   weightBps: number,
 ): string {
-  return (
-    "0x" +
-    STAKING_SELECTORS.delegate +
-    encodeUint256(clusterId) +
-    encodeUint256(weightBps)
-  );
+  return encodeDelegateCalldata(clusterId, weightBps);
 }
 
-export function buildUndelegateCalldata(
-  clusterId: number,
-  weightBps: number,
-): string {
-  return (
-    "0x" +
-    STAKING_SELECTORS.undelegate +
-    encodeUint256(clusterId) +
-    encodeUint256(weightBps)
-  );
+/** undelegate(uint32 clusterId) — cluster only. The SDK encoder takes NO
+ *  weightBps; the chain appends a redemption ticket for the delegated stake. */
+export function buildUndelegateCalldata(clusterId: number): string {
+  return encodeUndelegateCalldata(clusterId);
 }
 
+/** redelegate(uint32 src, uint32 dst, uint16 weightBps). */
 export function buildRedelegateCalldata(
   srcCluster: number,
   dstCluster: number,
   weightBps: number,
 ): string {
-  return (
-    "0x" +
-    STAKING_SELECTORS.redelegate +
-    encodeUint256(srcCluster) +
-    encodeUint256(dstCluster) +
-    encodeUint256(weightBps)
-  );
+  return encodeRedelegateCalldata(srcCluster, dstCluster, weightBps);
 }
 
+/** claim() — selector only, no args. */
 export function buildClaimRewardsCalldata(): string {
-  return "0x" + STAKING_SELECTORS.claimRewards;
+  return encodeClaimCalldata();
 }
 
 export async function fetchClusterDirectory(
@@ -119,13 +100,21 @@ export async function fetchDelegations(
 
 /**
  * Submit a delegation-precompile call (delegate / undelegate / redelegate
- * / claimRewards). Drives the same encrypted-envelope path as `sendLyth`,
- * but `to` is the precompile address and value is 0.
+ * / claim). Drives the same encrypted-envelope path as `sendLyth`, with
+ * `to` set to the delegation precompile address.
+ *
+ * The SDK `delegate(uint32,uint16)` model sets the wallet-weight via
+ * calldata but expects the principal LYTH stake to be sent as `msg.value`.
+ * Pass `valueLythoshi` for delegate; leave it `0n` (default) for
+ * undelegate / redelegate / claim.
  */
 export interface SubmitStakingTxArgs {
   fromBech32m: string;
   data: string;
   unlockBackend: () => Promise<MlDsa65Backend>;
+  /** Principal stake (lythoshi) sent as `msg.value`. Required for delegate;
+   *  0n (default) for undelegate / redelegate / claim. */
+  valueLythoshi?: bigint;
   /** Execution-unit limit. Delegation precompile calls typically need
    *  ~50_000 units; bump if the chain rejects with out-of-execution. */
   executionUnitLimit?: bigint;
@@ -155,7 +144,7 @@ export async function submitStakingTx(
     maxFeePerGas: bigintToHex(executionUnitPrice),
     maxPriorityFeePerGas: bigintToHex(executionUnitPrice),
     to: DELEGATION_PRECOMPILE,
-    value: "0x0",
+    value: bigintToHex(args.valueLythoshi ?? 0n),
     input: args.data,
   };
 
@@ -177,6 +166,10 @@ export async function submitStakingTx(
   const txHash = await rpc.lythSubmitEncrypted(wrapped.envelopeWireHex);
   return { txHash, innerSighashHex: wrapped.innerSighashHex };
 }
+
+/** Re-export the SDK's typed delegation error so screens can branch on it
+ *  without importing the SDK directly. */
+export { DelegationPrecompileError };
 
 function hexToBytes(s: string): Uint8Array {
   const stripped = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;

@@ -19,7 +19,7 @@
     "tauri:android:build": "tauri android build"
   },
   "dependencies": {
-    "@monolythium/core-sdk": "0.3.9",
+    "@monolythium/core-sdk": "0.3.10",
     "@noble/hashes": "2.2.0",
     "@scure/bip39": "2.2.0",
     "@tauri-apps/api": "^2.1.1",

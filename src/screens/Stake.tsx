@@ -94,9 +94,16 @@ export function Stake({ selfAddress, openOperation }: Props) {
       confirmLabel: "Sign and stake",
       execute: async () => {
         const calldata = buildDelegateCalldata(clusterId, weightBps);
+        // The SDK delegate(uint32,uint16) model sets the wallet-weight via
+        // calldata; the principal LYTH staked rides as msg.value. This screen
+        // only collects weight today, so principal funding is a separate
+        // concern (no amount field yet) — pass 0n explicitly.
+        // TODO(monolythium-vision): add a principal-amount input to fund the
+        // delegation stake (valueLythoshi) rather than weight-only.
         const result = await submitStakingTx({
           fromBech32m: selfBech32m,
           data: calldata,
+          valueLythoshi: 0n,
           unlockBackend: makeBiometricBackendFactory({
             unlock: unlockViaBiometric,
           }),
