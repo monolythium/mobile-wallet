@@ -1,14 +1,27 @@
-// Stake — current delegations + cluster directory + delegate flow.
+// Stake — current delegations + cluster directory + delegate flow +
+// autovote (§25.1).
 //
 // Delegation runs over the precompile at `0x…100A`. The chain may
 // reject the call until the precompile is activated; wallets surface
 // the chain's typed error verbatim. The Stake screen is informational
 // + the delegate compose UI; the OperationsDrawer drives auth + write.
+//
+// The autovote surface (§25.1) sits above the directory: four modes
+// (Max Yield / Max Diversity / Max Decentralization / Custom). The two
+// diversity modes consume the live `lyth_getClusterDiversity` reads
+// (-> ClusterDiversityView) and the planner in `sdk/autovote.ts`;
+// Max Yield uses the aggregate-health proxy (no APR on chain — see the
+// planner's TODO); Custom keeps the existing per-cluster manual form.
+//
+// A read-only per-cluster diversity chip (delegator-facing diversity view)
+// is shown once the scores are fetched.
 
 import { useCallback, useEffect, useState } from "react";
 import {
   addressToTypedBech32,
+  DIVERSITY_SCORE_MAX,
   type ClusterDirectoryEntryResponse,
+  type ClusterDiversityView,
   type DelegationsResponse,
 } from "@monolythium/core-sdk";
 import type { OperationRequest } from "../components/OperationsDrawer";
@@ -18,6 +31,12 @@ import {
   fetchDelegations,
   submitStakingTx,
 } from "../sdk/staking";
+import {
+  computeAutovotePlan,
+  fetchClusterDiversity,
+  type AutovoteMode,
+  type AutovotePlan,
+} from "../sdk/autovote";
 import {
   makeBiometricBackendFactory,
   unlockViaBiometric,
@@ -33,12 +52,33 @@ type DelegateFormState =
   | { kind: "closed" }
   | { kind: "open"; clusterId: number; weightBpsDraft: string; error: string | null };
 
+/** Default total wallet-weight an autovote plan distributes (50%). */
+const DEFAULT_AUTOVOTE_CAP_BPS = 5000;
+
+const AUTOVOTE_MODES: { mode: AutovoteMode; label: string; blurb: string }[] = [
+  { mode: "max-yield", label: "Max Yield", blurb: "Highest aggregate health" },
+  { mode: "max-diversity", label: "Max Diversity", blurb: "Top diversity score" },
+  {
+    mode: "max-decentralization",
+    label: "Max Decentralization",
+    blurb: "Spread ASN / geo / hosting",
+  },
+  { mode: "custom", label: "Custom", blurb: "Pick clusters manually" },
+];
+
 export function Stake({ selfAddress, openOperation }: Props) {
   const [delegations, setDelegations] = useState<DelegationsResponse | null>(null);
   const [clusters, setClusters] = useState<ClusterDirectoryEntryResponse[]>([]);
+  const [diversity, setDiversity] = useState<Map<number, ClusterDiversityView>>(
+    new Map(),
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<DelegateFormState>({ kind: "closed" });
+  const [mode, setMode] = useState<AutovoteMode>("custom");
+  const [plan, setPlan] = useState<AutovotePlan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
 
   const refresh = useCallback(async (addr: string) => {
     setLoading(true);
@@ -79,6 +119,57 @@ export function Stake({ selfAddress, openOperation }: Props) {
 
   const selfBech32m = addressToTypedBech32("user", selfAddress);
 
+  // Fetch per-cluster diversity scores for the visible clusters. Best-effort:
+  // a cluster with no score reads as zero in the planner. Defined as a plain
+  // closure (not a hook) so it stays below the early-return identity guard.
+  const loadDiversity = async (): Promise<Map<number, ClusterDiversityView>> => {
+    const results = await Promise.all(
+      clusters
+        .filter((c) => c.active)
+        .map(async (c) => {
+          try {
+            return await fetchClusterDiversity(c.clusterId);
+          } catch {
+            return null;
+          }
+        }),
+    );
+    const next = new Map<number, ClusterDiversityView>();
+    for (const v of results) {
+      if (v) next.set(v.clusterId, v);
+    }
+    setDiversity(next);
+    return next;
+  };
+
+  // Selecting a mode runs the planner. Diversity/decentralization fetch live
+  // scores first; max-yield needs no scores; custom clears the plan.
+  const selectMode = async (next: AutovoteMode) => {
+    setMode(next);
+    setPlan(null);
+    setPlanError(null);
+    if (next === "custom") return;
+    setPlanning(true);
+    try {
+      let scores = diversity;
+      if (next === "max-diversity" || next === "max-decentralization") {
+        scores = await loadDiversity();
+      }
+      const computed = computeAutovotePlan({
+        mode: next,
+        clusters,
+        diversity: scores,
+        capBps: DEFAULT_AUTOVOTE_CAP_BPS,
+        spread: 3,
+      });
+      setPlan(computed);
+    } catch (cause) {
+      setPlanError((cause as Error)?.message ?? "could not build plan");
+    } finally {
+      setPlanning(false);
+    }
+  };
+
   const openDelegate = (clusterId: number, weightBps: number) => {
     const weightLabel = `${(weightBps / 100).toFixed(2)}%`;
     openOperation({
@@ -112,6 +203,64 @@ export function Stake({ selfAddress, openOperation }: Props) {
       },
     });
     setForm({ kind: "closed" });
+  };
+
+  // Apply an autovote plan: the chain has no multi-delegate calldata, so we
+  // submit one delegate tx PER allocation, sequentially. Partial failure is
+  // surfaced honestly — the drawer reports the first failure and which
+  // allocations already landed.
+  const applyPlan = (current: AutovotePlan) => {
+    const allocations = current.allocations.filter((a) => a.weightBps > 0);
+    if (allocations.length === 0) return;
+    const summaryLabel = allocations
+      .map((a) => `C${a.clusterId} ${(a.weightBps / 100).toFixed(2)}%`)
+      .join(" · ");
+    openOperation({
+      kind: "stake",
+      title: `Autovote · ${modeLabel(current.mode)}`,
+      summary: `Delegate to ${allocations.length} cluster${allocations.length === 1 ? "" : "s"} (${summaryLabel}). Each delegation is a separate signed transaction submitted in sequence.`,
+      details: [
+        { k: "From", v: selfBech32m, mono: true },
+        { k: "Mode", v: modeLabel(current.mode) },
+        ...allocations.map((a) => ({
+          k: `Cluster ${a.clusterId}`,
+          v: `${(a.weightBps / 100).toFixed(2)}%`,
+          mono: true,
+        })),
+        {
+          k: "Total weight",
+          v: `${(current.totalBps / 100).toFixed(2)}%`,
+          mono: true,
+        },
+        { k: "Precompile", v: "0x…100a", mono: true },
+        ...current.notes.map((n, i) => ({ k: i === 0 ? "Note" : " ", v: n })),
+      ],
+      confirmLabel: `Sign ${allocations.length} delegation${allocations.length === 1 ? "" : "s"}`,
+      execute: async () => {
+        const unlock = makeBiometricBackendFactory({ unlock: unlockViaBiometric });
+        const landed: string[] = [];
+        for (const a of allocations) {
+          try {
+            const result = await submitStakingTx({
+              fromBech32m: selfBech32m,
+              data: buildDelegateCalldata(a.clusterId, a.weightBps),
+              valueLythoshi: 0n,
+              unlockBackend: unlock,
+            });
+            landed.push(result.txHash);
+          } catch (cause) {
+            const msg = (cause as Error)?.message ?? "delegation failed";
+            throw new Error(
+              `Delegation to cluster ${a.clusterId} failed (${landed.length}/${allocations.length} landed): ${msg}`,
+            );
+          }
+        }
+        // Return the last tx hash for the Done pane; earlier hashes already
+        // landed on chain. Refresh delegations after the batch.
+        void refresh(selfAddress);
+        return landed[landed.length - 1] ?? "";
+      },
+    });
   };
 
   return (
@@ -178,6 +327,122 @@ export function Stake({ selfAddress, openOperation }: Props) {
         )}
       </div>
 
+      {/* Autovote — four-mode planner (§25.1). */}
+      <div className="mw-card">
+        <div className="mw-card__head">
+          <h3>Autovote</h3>
+          <div className="spacer" />
+          <span className="more">{(DEFAULT_AUTOVOTE_CAP_BPS / 100).toFixed(0)}% cap</span>
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 8,
+            marginBottom: 10,
+          }}
+        >
+          {AUTOVOTE_MODES.map((m) => (
+            <button
+              key={m.mode}
+              type="button"
+              className={`mw-btn${mode === m.mode ? " mw-btn--primary" : ""}`}
+              onClick={() => void selectMode(m.mode)}
+              disabled={planning}
+              style={{
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: 2,
+                padding: "9px 10px",
+                textAlign: "left",
+              }}
+            >
+              <span style={{ fontSize: 12.5, fontWeight: 600 }}>{m.label}</span>
+              <span style={{ fontSize: 10.5, color: "var(--fg-400)" }}>
+                {m.blurb}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {planning && (
+          <div className="row-help">Reading on-chain diversity scores…</div>
+        )}
+        {planError && (
+          <div className="row-help" style={{ color: "var(--err)" }}>
+            {planError}
+          </div>
+        )}
+
+        {mode === "custom" && !planning && (
+          <div className="row-help">
+            Pick a cluster below and set its weight manually.
+          </div>
+        )}
+
+        {plan && mode !== "custom" && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              padding: 10,
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid var(--fg-700)",
+              borderRadius: 8,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--fg-400)",
+              }}
+            >
+              Proposed allocation
+            </div>
+            {plan.allocations.length === 0 && (
+              <div className="row-help">
+                No active clusters to allocate against.
+              </div>
+            )}
+            {plan.allocations.map((a) => (
+              <div
+                key={a.clusterId}
+                className="mw-kv"
+                style={{ fontFamily: "var(--f-mono)" }}
+              >
+                <div className="k">Cluster {a.clusterId}</div>
+                <div className="v mono">{(a.weightBps / 100).toFixed(2)}%</div>
+              </div>
+            ))}
+            {plan.totalBps > DEFAULT_AUTOVOTE_CAP_BPS && (
+              <div className="row-help" style={{ color: "var(--warn)" }}>
+                Plan distributes more than the {(DEFAULT_AUTOVOTE_CAP_BPS / 100).toFixed(0)}% cap.
+              </div>
+            )}
+            {plan.notes.map((n) => (
+              <div
+                key={n}
+                className="row-help"
+                style={{ color: "var(--fg-400)", lineHeight: 1.5 }}
+              >
+                {n}
+              </div>
+            ))}
+            <button
+              type="button"
+              className="mw-btn mw-btn--primary mw-btn--block"
+              onClick={() => applyPlan(plan)}
+              disabled={plan.allocations.length === 0}
+            >
+              Review autovote
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="mw-card">
         <div className="mw-card__head">
           <h3>Cluster directory</h3>
@@ -195,6 +460,7 @@ export function Stake({ selfAddress, openOperation }: Props) {
           <ClusterRow
             key={c.clusterId}
             cluster={c}
+            diversity={diversity.get(c.clusterId) ?? null}
             isFormOpen={form.kind === "open" && form.clusterId === c.clusterId}
             form={form.kind === "open" && form.clusterId === c.clusterId ? form : null}
             onOpenForm={() =>
@@ -236,6 +502,7 @@ export function Stake({ selfAddress, openOperation }: Props) {
 
 interface ClusterRowProps {
   cluster: ClusterDirectoryEntryResponse;
+  diversity: ClusterDiversityView | null;
   isFormOpen: boolean;
   form: { weightBpsDraft: string; error: string | null } | null;
   onOpenForm: () => void;
@@ -246,6 +513,7 @@ interface ClusterRowProps {
 
 function ClusterRow({
   cluster,
+  diversity,
   isFormOpen,
   form,
   onOpenForm,
@@ -275,11 +543,26 @@ function ClusterRow({
                 INACTIVE
               </span>
             )}
+            {diversity && (
+              <span
+                className="mw-halo"
+                style={{ marginLeft: 8, fontSize: 10 }}
+                title="Headline diversity score (0-100%)"
+              >
+                div {((diversity.score / DIVERSITY_SCORE_MAX) * 100).toFixed(0)}%
+              </span>
+            )}
           </div>
           <div className="mw-row__sub">
             {cluster.size} operators · threshold {cluster.threshold} ·
             health {cluster.aggregateHealth}
           </div>
+          {diversity && (
+            <div className="mw-row__sub" style={{ marginTop: 2 }}>
+              ASN {pct(diversity.asnVariance)} · Geo {pct(diversity.geoVariance)} ·
+              Hosting {pct(diversity.hostingSpread)}
+            </div>
+          )}
           {cluster.regionDiversity && cluster.regionDiversity.length > 0 && (
             <div className="mw-row__sub" style={{ marginTop: 2 }}>
               Regions · {cluster.regionDiversity.join(", ")}
@@ -370,4 +653,21 @@ function ClusterRow({
       )}
     </div>
   );
+}
+
+function pct(bps: number): string {
+  return `${((bps / DIVERSITY_SCORE_MAX) * 100).toFixed(0)}%`;
+}
+
+function modeLabel(mode: AutovoteMode): string {
+  switch (mode) {
+    case "max-yield":
+      return "Max Yield";
+    case "max-diversity":
+      return "Max Diversity";
+    case "max-decentralization":
+      return "Max Decentralization";
+    case "custom":
+      return "Custom";
+  }
 }

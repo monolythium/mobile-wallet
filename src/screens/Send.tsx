@@ -14,7 +14,7 @@ import {
 import type { OperationRequest } from "../components/OperationsDrawer";
 import { ContactsPickerSheet } from "../components/ContactsPickerSheet";
 import { getProvider } from "../sdk/client";
-import { bumpContactLastUsed } from "../sdk/contacts";
+import { bumpContactLastUsed, listContacts } from "../sdk/contacts";
 import { previewMaxFeeLyth, sendLyth } from "../sdk/send";
 import {
   makeBiometricBackendFactory,
@@ -30,6 +30,14 @@ interface Props {
 
 const DEFAULT_LIMIT = 21_000n;
 const USER_HRP = ADDRESS_KIND_HRPS.user;
+
+// Finality posture is fixed by the chain's consensus model (whitepaper
+// §13 / §18): an anchor settles in ~1s, and ML-DSA-65 quantum-attested
+// checkpoints anchor finality against a future quantum adversary. There is
+// no per-tx finality RPC in 0.3.10, so this is a static, honest disclosure
+// row — never a fabricated per-tx confirmation count.
+const FINALITY_POSTURE =
+  "Anchor-level (~1s) · ML-DSA-65 quantum-attested checkpoint";
 
 export function Send({ selfAddress, openOperation, onClose }: Props) {
   const [recipient, setRecipient] = useState("");
@@ -90,15 +98,33 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
     return null;
   };
 
-  const onReview = () => {
+  const onReview = async () => {
     const err = validate();
     setValidationError(err);
     if (err) return;
 
     const toBech32m = recipient.trim();
     const amountLyth = amount.trim();
-    const toLabel = resolvedContactName
-      ? `${resolvedContactName} (${shortAddr(toBech32m)})`
+
+    // §25.2 item 6 — recipient name. A picked contact already set
+    // `resolvedContactName`; for a manually-typed address, look it up in the
+    // local address book so a saved name surfaces even without the picker.
+    // The address book is the ONLY source of recipient names — there is no
+    // on-chain reverse resolver in the SDK.
+    let recipientName = resolvedContactName;
+    if (recipientName === null) {
+      try {
+        const contacts = await listContacts();
+        const lower = toBech32m.toLowerCase();
+        const match = contacts.find((c) => c.bech32m.toLowerCase() === lower);
+        if (match) recipientName = match.name;
+      } catch {
+        // Address-book read is best-effort; absence of a name is fine.
+      }
+    }
+
+    const toLabel = recipientName
+      ? `${recipientName} (${shortAddr(toBech32m)})`
       : shortAddr(toBech32m);
     const summary = `Send ${amountLyth} LYTH to ${toLabel} on the Monolythium testnet.`;
 
@@ -108,14 +134,13 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
       summary,
       details: [
         { k: "From", v: selfBech32m, mono: true },
-        ...(resolvedContactName
-          ? [{ k: "Contact", v: resolvedContactName }]
-          : []),
+        ...(recipientName ? [{ k: "Recipient", v: recipientName }] : []),
         { k: "To", v: toBech32m, mono: true },
         { k: "Amount", v: `${amountLyth} LYTH`, mono: true },
         ...(feePreview !== null
           ? [{ k: "Max fee", v: `${feePreview} LYTH`, mono: true }]
           : []),
+        { k: "Finality", v: FINALITY_POSTURE },
       ],
       confirmLabel: "Authorise and send",
       execute: async () => {
@@ -264,7 +289,7 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
         </button>
         <button
           className="mw-btn mw-btn--primary mw-btn--block"
-          onClick={onReview}
+          onClick={() => void onReview()}
           style={{ flex: 1 }}
           disabled={!recipient.trim() || !amount.trim()}
         >
