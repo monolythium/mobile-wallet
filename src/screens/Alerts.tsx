@@ -15,8 +15,7 @@
 import { useCallback, useState } from "react";
 import { Icon } from "../components/Icon";
 import { NotificationDetailSheet } from "../components/NotificationDetailSheet";
-import { truncMiddle, relativeMs } from "../components/ActivityDetailSheet";
-import { addressToTypedBech32 } from "@monolythium/core-sdk";
+import { relativeMs } from "../components/ActivityDetailSheet";
 import { useExperimentalV5 } from "../sdk/use-feature-flags";
 import { useNotifications } from "../sdk/use-notifications";
 import {
@@ -24,7 +23,7 @@ import {
   markNotificationRead,
 } from "../sdk/notifications-store";
 import {
-  isZeroAmount,
+  notificationBody,
   notificationTitle,
   type NotificationRecord,
 } from "../sdk/notifications";
@@ -112,9 +111,7 @@ function NotificationRow({
   onOpen: () => void;
 }) {
   const title = notificationTitle(record.kind, record.status);
-  const short = truncMiddle(displayCounterparty(record.counterparty));
-  const showAmount = !isZeroAmount(record.amountDecimal);
-  const sub = showAmount ? `${record.amountDecimal} LYTH · ${short}` : short;
+  const sub = notificationBody(record.amountDecimal, record.counterparty);
 
   return (
     <div
@@ -164,18 +161,4 @@ function NotificationRow({
       </div>
     </div>
   );
-}
-
-// Records store a raw 0x… hex counterparty. Convert to the user-facing
-// mono1… bech32m form before display; fall back to the original string if it
-// isn't a recognisable hex address (e.g. a precompile).
-function displayCounterparty(s: string): string {
-  if (/^0x[0-9a-fA-F]{40}$/.test(s)) {
-    try {
-      return addressToTypedBech32("user", s);
-    } catch {
-      return s;
-    }
-  }
-  return s;
 }

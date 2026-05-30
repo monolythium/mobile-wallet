@@ -5,7 +5,9 @@
 // so a notification recorded on one Monolythium wallet surface reads
 // identically on another. No `@tauri-apps/*`, no DOM, no IPC, no
 // module-scope state — every helper here is deterministic and unit-testable
-// in vitest without a Tauri runtime.
+// in vitest without a Tauri runtime. (`addressToTypedBech32` from the core
+// SDK is pure bech32m encoding — no DOM/IPC — so the body builder stays
+// unit-testable.)
 //
 // The plugin-store round-trip lives in `notifications-store.ts`; the single
 // recording chokepoint (terminal pending→confirmed/failed transition) lives
@@ -22,6 +24,8 @@
 // - No secrets in the body: the record's fields are exactly txHash / status
 //   / blockNumber / kind / amountDecimal / counterparty / createdAtMs / read
 //   / schemaVersion — amount + short bech32m only, never a contact name.
+
+import { addressToTypedBech32 } from "@monolythium/core-sdk";
 
 /** Max notification records retained — newest-first, capped via
  *  `appendCapped`. 50 covers months of normal use; older records are
@@ -162,6 +166,40 @@ export function notificationTitle(
   status: "confirmed" | "failed",
 ): string {
   return NOTIFICATION_LABELS[kind][status];
+}
+
+/** Records store a raw 0x… hex counterparty. Convert to the user-facing
+ *  mono1… bech32m form for display; fall back to the original string if it
+ *  isn't a recognisable hex address (e.g. a precompile). Pure — same logic the
+ *  notifications-center row uses. */
+export function displayCounterparty(s: string): string {
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) {
+    try {
+      return addressToTypedBech32("user", s);
+    } catch {
+      return s;
+    }
+  }
+  return s;
+}
+
+/** Middle-truncate a long string (e.g. a bech32m address) for compact
+ *  display: `mono1abc…uvwxyz`. Pure; shared by the row and the OS toast. */
+export function truncMiddle(s: string, head = 10, tail = 6): string {
+  return s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s;
+}
+
+/** Friendly notification body — the SAME secondary line the notifications
+ *  center row renders: `"<amount> LYTH · <short bech32m>"`, or just the short
+ *  bech32m when the amount is zero/empty. Carries NO secrets (amount + short
+ *  address only — never a contact name). Pure, so the in-app row, the OS
+ *  toast, and unit tests all derive an identical string. */
+export function notificationBody(
+  amountDecimal: string,
+  counterparty: string,
+): string {
+  const short = truncMiddle(displayCounterparty(counterparty));
+  return isZeroAmount(amountDecimal) ? short : `${amountDecimal} LYTH · ${short}`;
 }
 
 /** True for amount strings that mean "zero LYTH". The row/detail omit the

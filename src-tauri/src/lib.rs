@@ -3,6 +3,9 @@
 //   - encrypted vault file commands from `vault.rs` (Stage 4 prep)
 //   - deep-link plugin (Stage 4 — `monolythium://` and `lyth:` schemes)
 //   - tauri-plugin-store (Stage 4 — WalletConnect v2 session persistence)
+//   - tauri-plugin-notification — native OS notifications for confirmed/
+//     failed txs, additive to the in-app notifications center; any-target
+//     like deep-link + store. The JS side requests permission on first use.
 //
 // The deep-link plugin is registered on every target (desktop + iOS +
 // Android) — desktop registration is needed for both the `tauri ios dev`
@@ -27,6 +30,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             auth::biometric_is_available,
             auth::biometric_authenticate,
