@@ -3,9 +3,8 @@
 // Funnel for every "the OS handed us a URL" path: native URL schemes
 // (`monolythium://`, `lyth:`), QR scans, and pasted strings all land here
 // before the React layer routes them. Keeping a single parser means the QR
-// scanner doesn't need to know about WalletConnect, and Send / Sign sheets
-// don't need to know about QR camera state — both consume the same typed
-// `DeepLinkAction` value.
+// scanner and the Send / Sign sheets don't need to know about each other's
+// concerns — both consume the same typed `DeepLinkAction` value.
 //
 // Recognised inputs:
 //
@@ -13,9 +12,7 @@
 //   monolythium://stake?cluster=C-003&clusterId=3&chainId=69420
 //   monolythium://sign?type=personal&message=0x..
 //   monolythium://sign?type=typed&domain=..&message=..  (EIP-712, JSON-encoded)
-//   monolythium://wc?uri=wc:<topic>@2?relay-protocol=irn&symKey=..
 //   lyth:<mono1-address>?value=..&token=..       (shorthand send)
-//   wc:<topic>@2?relay-protocol=irn&symKey=..    (raw WalletConnect URI)
 //
 // Anything that doesn't match returns `{ kind: "unknown", raw }` and the
 // caller renders an "unrecognised request" sheet.
@@ -58,13 +55,6 @@ export type TypedSignAction = {
   raw: string;
 };
 
-export interface WalletConnectAction {
-  kind: "walletconnect";
-  /** The full `wc:<topic>@2?...` URI passed straight to SignClient.pair(). */
-  uri: string;
-  raw: string;
-}
-
 export interface StakeAction {
   kind: "stake";
   /** Human cluster label, e.g. C-003. */
@@ -86,7 +76,6 @@ export type DeepLinkAction =
   | SendAction
   | PersonalSignAction
   | TypedSignAction
-  | WalletConnectAction
   | StakeAction
   | UnknownAction;
 
@@ -98,21 +87,12 @@ export function parseDeepLink(raw: string): DeepLinkAction {
   if (!raw) return { kind: "unknown", reason: "empty input", raw };
   const trimmed = raw.trim();
 
-  // 1. WalletConnect v2 — match early because the URI looks like
-  //    `wc:<hex>@2?relay-protocol=irn&symKey=<hex>` and the leading scheme
-  //    is what the relay routes on.
-  if (trimmed.toLowerCase().startsWith("wc:")) {
-    return validateWcUri(trimmed)
-      ? { kind: "walletconnect", uri: trimmed, raw }
-      : { kind: "unknown", reason: "malformed wc: uri", raw };
-  }
-
-  // 2. `lyth:` shorthand send — `lyth:<address>?value=..&token=..`.
+  // 1. `lyth:` shorthand send — `lyth:<address>?value=..&token=..`.
   if (trimmed.toLowerCase().startsWith("lyth:")) {
     return parseLythShorthand(trimmed, raw);
   }
 
-  // 3. EIP-681 `ethereum:` URIs are not a Monolythium v4.1 public address
+  // 2. EIP-681 `ethereum:` URIs are not a Monolythium public address
   //    surface. Reject them instead of silently coercing raw 0x recipients.
   if (trimmed.toLowerCase().startsWith("ethereum:")) {
     return {
@@ -122,12 +102,12 @@ export function parseDeepLink(raw: string): DeepLinkAction {
     };
   }
 
-  // 4. `monolythium://...` — the wallet's own scheme, parsed via URL.
+  // 3. `monolythium://...` — the wallet's own scheme, parsed via URL.
   if (trimmed.toLowerCase().startsWith("monolythium:")) {
     return parseMonolythiumScheme(trimmed, raw);
   }
 
-  // 5. Bare 0x-prefixed addresses are retired at public wallet surfaces.
+  // 4. Bare 0x-prefixed addresses are retired at public wallet surfaces.
   if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
     return {
       kind: "unknown",
@@ -153,7 +133,7 @@ function parseMonolythiumScheme(input: string, raw: string): DeepLinkAction {
     return { kind: "unknown", reason: "invalid monolythium URL", raw };
   }
 
-  // host carries the verb (`send`, `sign`, `wc`). Pathname is reserved.
+  // host carries the verb (`send`, `sign`). Pathname is reserved.
   const verb = (url.host || url.pathname.replace(/^\/+/, "")).toLowerCase();
   const params = url.searchParams;
 
@@ -207,15 +187,6 @@ function parseMonolythiumScheme(input: string, raw: string): DeepLinkAction {
         }
       }
       return { kind: "unknown", reason: `sign: unknown type ${type}`, raw };
-    }
-    case "wc": {
-      const uri = params.get("uri") ?? params.get("u");
-      if (!uri) {
-        return { kind: "unknown", reason: "wc: missing uri", raw };
-      }
-      return validateWcUri(uri)
-        ? { kind: "walletconnect", uri, raw }
-        : { kind: "unknown", reason: "wc: malformed uri", raw };
     }
     default:
       return { kind: "unknown", reason: `unknown verb: ${verb || "(none)"}`, raw };
@@ -289,19 +260,6 @@ function requireDeepLinkAddress(address: string, expectedKind: AddressKind, labe
       `${label} must be typed ${ADDRESS_KIND_HRPS[expectedKind]} bech32m address: ${message}`,
     );
   }
-}
-
-function validateWcUri(uri: string): boolean {
-  // Minimal sanity check — the SignClient enforces the rest. Spec form:
-  //   `wc:<topic>@2?relay-protocol=irn&symKey=<hex>`
-  // Topic is hex; symKey is hex. We're only filtering obvious junk so the
-  // user gets an immediate "this isn't a WC URI" instead of an opaque
-  // SignClient error.
-  if (!/^wc:[a-f0-9]{1,128}@[12]/i.test(uri)) return false;
-  const qIdx = uri.indexOf("?");
-  if (qIdx === -1) return false;
-  const params = new URLSearchParams(uri.slice(qIdx + 1));
-  return Boolean(params.get("symKey")) && Boolean(params.get("relay-protocol"));
 }
 
 function optInt(s: string | null | undefined): number | undefined {

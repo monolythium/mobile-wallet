@@ -29,10 +29,10 @@ thiserror = "1"
 # `Universal Links` + `Custom URL Schemes`; on Android it parses
 # `intent-filter` data attributes. Same `on_open_url` callback shape for all.
 tauri-plugin-deep-link = "2"
-# `tauri-plugin-store` persists WC v2 session state (topic, peer metadata,
-# accounts, expiry). Separate file from `vault.v1.json` — the WC store is
-# unencrypted (sessions are public on the relay anyway) and fully wipeable
-# from a "Disconnect all" affordance without disturbing the vault.
+# `tauri-plugin-store` persists app state in JSON stores next to the vault:
+# feature flags (flags.v1.json), the notifications history, and the durable
+# tracked-tx set. Unencrypted and independently wipeable without disturbing
+# the encrypted vault.
 tauri-plugin-store = "2"
 # `tauri-plugin-notification` raises native OS notifications (iOS/Android
 # banner, desktop host toast) for confirmed/failed txs — additive to the
