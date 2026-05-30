@@ -52,7 +52,13 @@ interface Props {
 
 type DelegateFormState =
   | { kind: "closed" }
-  | { kind: "open"; clusterId: number; weightBpsDraft: string; error: string | null };
+  | {
+      kind: "open";
+      clusterId: number;
+      weightBpsDraft: string;
+      principalLythDraft: string;
+      error: string | null;
+    };
 
 /** Default total wallet-weight an autovote plan distributes (50%). */
 const DEFAULT_AUTOVOTE_CAP_BPS = 5000;
@@ -176,40 +182,41 @@ export function Stake({ selfAddress, openOperation }: Props) {
     }
   };
 
-  const openDelegate = (clusterId: number, weightBps: number) => {
+  const openDelegate = (clusterId: number, weightBps: number, principalLyth: bigint) => {
     const weightLabel = `${(weightBps / 100).toFixed(2)}%`;
+    const principalLythoshi = principalLyth * 100_000_000n; // 1 LYTH = 1e8 lythoshi
     openOperation({
       kind: "stake",
-      title: `Delegate to cluster ${clusterId}`,
-      summary: `Stake ${weightLabel} of your wallet weight to cluster ${clusterId}. The chain confirms in ~1 second.`,
+      title: `Delegate ${principalLyth} LYTH to cluster ${clusterId}`,
+      summary: `Stake ${principalLyth} LYTH principal at ${weightLabel} of your wallet weight to cluster ${clusterId}. The chain confirms in ~1 second.`,
       details: [
         { k: "From", v: selfBech32m, mono: true },
         { k: "Cluster", v: String(clusterId), mono: true },
         { k: "Weight", v: weightLabel, mono: true },
+        {
+          k: "Principal",
+          v: `${principalLyth} LYTH (${principalLythoshi.toString()} lythoshi)`,
+          mono: true,
+        },
         { k: "Precompile", v: "0x…100a", mono: true },
       ],
       confirmLabel: "Sign and stake",
-      // Notifications-center metadata (experimental-v5). Delegation is
-      // weight-only today (principal rides as msg.value, 0n here), so the
-      // amount is "0" and the row/detail suppress it. Counterparty is the
-      // delegation precompile, never a contact name.
+      // Notifications-center metadata (experimental-v5). The principal LYTH
+      // staked rides as msg.value; the amount shown is that principal.
+      // Counterparty is the delegation precompile, never a contact name.
       notify: {
         kind: "delegate",
-        amountDecimal: "0",
+        amountDecimal: principalLyth.toString(),
         counterparty: DELEGATION_PRECOMPILE.toLowerCase(),
       },
       execute: async () => {
-        const calldata = buildDelegateCalldata(clusterId, weightBps);
         // The SDK delegate(uint32,uint16) model sets the wallet-weight via
-        // calldata; the principal LYTH staked rides as msg.value. This screen
-        // only collects weight today, so principal funding is a separate
-        // concern (no amount field yet) — pass 0n explicitly.
-        // TODO(monolythium-vision): add a principal-amount input to fund the
-        // delegation stake (valueLythoshi) rather than weight-only.
+        // calldata; the principal LYTH staked rides as msg.value.
+        const calldata = buildDelegateCalldata(clusterId, weightBps);
         const result = await submitStakingTx({
           fromBech32m: selfBech32m,
           data: calldata,
-          valueLythoshi: 0n,
+          valueLythoshi: principalLythoshi,
           unlockBackend: makeBiometricBackendFactory({
             unlock: unlockViaBiometric,
           }),
@@ -259,6 +266,11 @@ export function Stake({ selfAddress, openOperation }: Props) {
             const result = await submitStakingTx({
               fromBech32m: selfBech32m,
               data: buildDelegateCalldata(a.clusterId, a.weightBps),
+              // Autovote (experimental, default-off) plans carry only weight,
+              // not a per-allocation principal split — principal escrow for the
+              // multi-delegate path is a follow-up (the planner must emit a
+              // per-cluster principal first). The single-delegate path above
+              // escrows real principal.
               valueLythoshi: 0n,
               unlockBackend: unlock,
             });
@@ -485,14 +497,22 @@ export function Stake({ selfAddress, openOperation }: Props) {
                 kind: "open",
                 clusterId: c.clusterId,
                 weightBpsDraft: "1000",
+                principalLythDraft: "100",
                 error: null,
               })
             }
             onCancelForm={() => setForm({ kind: "closed" })}
-            onChangeDraft={(v) =>
+            onChangeWeightDraft={(v) =>
               setForm((prev) =>
                 prev.kind === "open" && prev.clusterId === c.clusterId
                   ? { ...prev, weightBpsDraft: v, error: null }
+                  : prev,
+              )
+            }
+            onChangePrincipalDraft={(v) =>
+              setForm((prev) =>
+                prev.kind === "open" && prev.clusterId === c.clusterId
+                  ? { ...prev, principalLythDraft: v, error: null }
                   : prev,
               )
             }
@@ -500,15 +520,21 @@ export function Stake({ selfAddress, openOperation }: Props) {
               if (form.kind !== "open" || form.clusterId !== c.clusterId) return;
               const bps = parseInt(form.weightBpsDraft, 10);
               if (!Number.isFinite(bps) || bps <= 0 || bps > 10_000) {
-                setForm({
-                  kind: "open",
-                  clusterId: c.clusterId,
-                  weightBpsDraft: form.weightBpsDraft,
-                  error: "Weight must be 1-10000 basis points (0.01% – 100%).",
-                });
+                setForm({ ...form, error: "Weight must be 1-10000 basis points (0.01% – 100%)." });
                 return;
               }
-              openDelegate(c.clusterId, bps);
+              let principal: bigint;
+              try {
+                principal = BigInt(form.principalLythDraft);
+              } catch {
+                setForm({ ...form, error: "Principal must be a positive integer of whole LYTH." });
+                return;
+              }
+              if (principal <= 0n) {
+                setForm({ ...form, error: "Principal must be > 0 whole LYTH." });
+                return;
+              }
+              openDelegate(c.clusterId, bps, principal);
             }}
           />
         ))}
@@ -521,10 +547,11 @@ interface ClusterRowProps {
   cluster: ClusterDirectoryEntryResponse;
   diversity: ClusterDiversityView | null;
   isFormOpen: boolean;
-  form: { weightBpsDraft: string; error: string | null } | null;
+  form: { weightBpsDraft: string; principalLythDraft: string; error: string | null } | null;
   onOpenForm: () => void;
   onCancelForm: () => void;
-  onChangeDraft: (v: string) => void;
+  onChangeWeightDraft: (v: string) => void;
+  onChangePrincipalDraft: (v: string) => void;
   onSubmit: () => void;
 }
 
@@ -535,7 +562,8 @@ function ClusterRow({
   form,
   onOpenForm,
   onCancelForm,
-  onChangeDraft,
+  onChangeWeightDraft,
+  onChangePrincipalDraft,
   onSubmit,
 }: ClusterRowProps) {
   return (
@@ -631,7 +659,34 @@ function ClusterRow({
             min={1}
             max={10000}
             value={form.weightBpsDraft}
-            onChange={(e) => onChangeDraft(e.target.value)}
+            onChange={(e) => onChangeWeightDraft(e.target.value)}
+            style={{
+              padding: "8px 10px",
+              fontSize: 14,
+              fontFamily: "var(--f-mono)",
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 8,
+              color: "var(--fg-100)",
+              outline: "none",
+            }}
+          />
+          <label
+            style={{
+              fontSize: 11,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              color: "var(--fg-400)",
+            }}
+          >
+            Principal (whole LYTH)
+          </label>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={1}
+            value={form.principalLythDraft}
+            onChange={(e) => onChangePrincipalDraft(e.target.value)}
             style={{
               padding: "8px 10px",
               fontSize: 14,
