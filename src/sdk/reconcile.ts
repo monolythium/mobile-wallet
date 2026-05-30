@@ -25,7 +25,10 @@
 // terminal state, so we synthesize nothing). It never coerces failed→confirmed
 // or invents a verdict for a tx the chain hasn't resolved.
 
+import { experimentalV5Enabled } from "./feature-flags";
+import { notificationBody, notificationTitle } from "./notifications";
 import { recordNotification } from "./notifications-store";
+import { sendOsToast } from "./os-toast";
 import { pendingTxKey, type PendingTx } from "./pending-tx";
 import {
   listPendingTxs,
@@ -153,7 +156,22 @@ export async function reconcilePendingOnce(
         amountDecimal: t.entry.amountDecimal,
         counterparty: t.entry.counterparty,
       });
-      if (added) recorded++;
+      if (added) {
+        recorded++;
+        // Native OS notification — additive to the in-app record, fired
+        // EXACTLY once per newly-recorded terminal tx (`added` is the existing
+        // (chainIdHex, txHash) dedupe, so a re-observed tx never re-fires).
+        // Gated behind the experimental surface: flag OFF ⇒ no toast and no
+        // permission prompt. Same friendly title/body as the in-app row (no
+        // secrets — amount + short bech32m only). Best-effort + fire-and-forget
+        // so a slow/denied permission prompt never blocks or fails the tick.
+        if (experimentalV5Enabled()) {
+          void sendOsToast(
+            notificationTitle(t.entry.opKind, t.status),
+            notificationBody(t.entry.amountDecimal, t.entry.counterparty),
+          );
+        }
+      }
       removeKeys.add(pendingTxKey(t.entry.chainIdHex, t.entry.txHash));
     }
     // Expired entries are dropped silently — no notification (honest absence).

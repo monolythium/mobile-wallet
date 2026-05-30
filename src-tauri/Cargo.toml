@@ -34,6 +34,12 @@ tauri-plugin-deep-link = "2"
 # unencrypted (sessions are public on the relay anyway) and fully wipeable
 # from a "Disconnect all" affordance without disturbing the vault.
 tauri-plugin-store = "2"
+# `tauri-plugin-notification` raises native OS notifications (iOS/Android
+# banner, desktop host toast) for confirmed/failed txs — additive to the
+# in-app notifications center. Any-target like deep-link + store: on desktop
+# it taps the host notification backend, on iOS UNUserNotificationCenter, on
+# Android NotificationManager. The JS side requests permission on first use.
+tauri-plugin-notification = "2"
 
 # Mobile-only plugins. iOS Keychain Services + Android Keystore via
 # tauri-plugin-keystore; Touch ID / Face ID / fingerprint via
