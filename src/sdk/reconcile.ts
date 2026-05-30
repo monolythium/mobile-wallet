@@ -2,8 +2,8 @@
 // tx to its REAL terminal state (confirmed OR failed) and records a faithful
 // notification on the explicit receipt status bit.
 //
-// This replaces the old per-drawer poll (`recordTerminalNotification`), which
-// died when the OperationsDrawer sheet was dismissed. The pieces are:
+// This replaces the old per-drawer one-shot poll, which died when the
+// OperationsDrawer sheet was dismissed. The pieces are:
 //
 //   - the durable registry  (`pending-tx-store.ts`)  — survives sheet-dismiss
 //                                                       + app restart
