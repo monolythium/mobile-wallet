@@ -25,6 +25,7 @@ import { QrScanner } from "./screens/QrScanner";
 import { Send } from "./screens/Send";
 import { Receive } from "./screens/Receive";
 import { Activity } from "./screens/Activity";
+import { Alerts } from "./screens/Alerts";
 import { Stake } from "./screens/Stake";
 import { Bridge } from "./screens/Bridge";
 import { Agents } from "./screens/Agents";
@@ -35,6 +36,7 @@ import { ResetWallet } from "./screens/settings/ResetWallet";
 import { About } from "./screens/settings/About";
 import { Experimental } from "./screens/settings/Experimental";
 import { useExperimentalV5 } from "./sdk/use-feature-flags";
+import { useUnreadCount } from "./sdk/use-notifications";
 import { fetchChainStatus, type ChainStatus } from "./sdk/client";
 import {
   buildOfflineWalletReadiness,
@@ -82,15 +84,23 @@ export default function App() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
+  // Notifications center overlay (experimental-v5). Opened from the top-bar
+  // bell; sits above whatever tab is active.
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [status, setStatus] = useState<ChainStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<WalletReadiness | null>(null);
   const [onboarding, setOnboarding] = useState<OnboardingState>("checking");
   const [selfAddress, setSelfAddress] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  // Experimental v5 surfaces (Agents, Bridge, autovote) are opt-in and OFF
-  // by default. When off, the More menu and screens below stay hidden.
+  // Experimental v5 surfaces (Agents, Bridge, autovote, Notifications) are
+  // opt-in and OFF by default. When off, the More menu and screens below stay
+  // hidden and the bell + its badge are not mounted.
   const experimentalV5 = useExperimentalV5();
+  // Unread notification count drives the top-bar bell badge. The hook
+  // hydrates the store on mount; it reports 0 until then and whenever the
+  // flag is off (no records are ever recorded in that case).
+  const unreadCount = useUnreadCount();
 
   // Probe the platform keystore once on mount. If a secret is present the
   // device has been onboarded; otherwise show the onboarding screen first.
@@ -284,14 +294,26 @@ export default function App() {
     routeAction(action);
   };
 
-  const title = tabTitle(tab, more);
+  const title = notificationsOpen ? "Notifications" : tabTitle(tab, more);
+  const showScanButton = tab !== "more" && !sendOpen && !receiveOpen;
+  // The bell lives on every screen while the experimental surface is on
+  // (except when the center itself is open). Tapping it raises the center.
+  const showBell = experimentalV5 && !notificationsOpen;
 
   return (
     <main className="mw-root" data-denom="public">
       <TopBar
         title={title}
         leading={
-          tab === "more" && more !== "menu" ? (
+          notificationsOpen ? (
+            <button
+              className="mw-iconbtn"
+              onClick={() => setNotificationsOpen(false)}
+              aria-label="Back"
+            >
+              <Icon name="back" />
+            </button>
+          ) : tab === "more" && more !== "menu" ? (
             <button
               className="mw-iconbtn"
               onClick={() => {
@@ -316,19 +338,43 @@ export default function App() {
           ) : undefined
         }
         trailing={
-          tab !== "more" && !sendOpen && !receiveOpen ? (
-            <button
-              className="mw-iconbtn"
-              onClick={openScanner}
-              aria-label="Scan QR code"
-            >
-              <Icon name="qr" />
-            </button>
+          notificationsOpen ? undefined : showBell || showScanButton ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {showScanButton && (
+                <button
+                  className="mw-iconbtn"
+                  onClick={openScanner}
+                  aria-label="Scan QR code"
+                >
+                  <Icon name="qr" />
+                </button>
+              )}
+              {showBell && (
+                <button
+                  className="mw-iconbtn mw-bell"
+                  onClick={() => setNotificationsOpen(true)}
+                  aria-label={
+                    unreadCount > 0
+                      ? `Notifications, ${unreadCount} unread`
+                      : "Notifications"
+                  }
+                >
+                  <Icon name="bell" />
+                  {unreadCount > 0 && (
+                    <span className="mw-bell-badge">
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
           ) : undefined
         }
       />
 
-      {tab === "home" && !sendOpen && !receiveOpen && (
+      {notificationsOpen && <Alerts />}
+
+      {!notificationsOpen && tab === "home" && !sendOpen && !receiveOpen && (
         <Home
           status={status}
           statusError={statusError}
@@ -340,36 +386,40 @@ export default function App() {
           onScan={openScanner}
         />
       )}
-      {tab === "home" && sendOpen && selfAddress && (
+      {!notificationsOpen && tab === "home" && sendOpen && selfAddress && (
         <Send
           selfAddress={selfAddress}
           openOperation={openOperation}
           onClose={() => setSendOpen(false)}
         />
       )}
-      {tab === "home" && receiveOpen && selfAddress && (
+      {!notificationsOpen && tab === "home" && receiveOpen && selfAddress && (
         <Receive
           selfAddress={selfAddress}
           onClose={() => setReceiveOpen(false)}
         />
       )}
-      {tab === "activity" && <Activity selfAddress={selfAddress} />}
-      {tab === "stake" && (
+      {!notificationsOpen && tab === "activity" && (
+        <Activity selfAddress={selfAddress} />
+      )}
+      {!notificationsOpen && tab === "stake" && (
         <Stake selfAddress={selfAddress} openOperation={openOperation} />
       )}
-      {tab === "ask" && <Ask openOperation={openOperation} />}
-      {tab === "more" && more === "menu" && (
+      {!notificationsOpen && tab === "ask" && <Ask openOperation={openOperation} />}
+      {!notificationsOpen && tab === "more" && more === "menu" && (
         <MoreMenu setMore={setMore} experimentalV5={experimentalV5} />
       )}
-      {tab === "more" && more === "keys" && <Keys openOperation={openOperation} />}
-      {tab === "more" && more === "audit" && <Audit />}
-      {tab === "more" && more === "bridge" && experimentalV5 && (
+      {!notificationsOpen && tab === "more" && more === "keys" && (
+        <Keys openOperation={openOperation} />
+      )}
+      {!notificationsOpen && tab === "more" && more === "audit" && <Audit />}
+      {!notificationsOpen && tab === "more" && more === "bridge" && experimentalV5 && (
         <Bridge openOperation={openOperation} />
       )}
-      {tab === "more" && more === "agents" && experimentalV5 && (
+      {!notificationsOpen && tab === "more" && more === "agents" && experimentalV5 && (
         <Agents selfAddress={selfAddress} openOperation={openOperation} />
       )}
-      {tab === "more" && more === "settings" && (
+      {!notificationsOpen && tab === "more" && more === "settings" && (
         <Settings
           go={(route: SettingsRoute) => {
             if (route === "menu") setMore("settings");
@@ -377,13 +427,13 @@ export default function App() {
           }}
         />
       )}
-      {tab === "more" && more === "settings/contacts" && (
+      {!notificationsOpen && tab === "more" && more === "settings/contacts" && (
         <Contacts onClose={() => setMore("settings")} />
       )}
-      {tab === "more" && more === "settings/reveal-phrase" && (
+      {!notificationsOpen && tab === "more" && more === "settings/reveal-phrase" && (
         <RevealPhrase onClose={() => setMore("settings")} />
       )}
-      {tab === "more" && more === "settings/reset-wallet" && (
+      {!notificationsOpen && tab === "more" && more === "settings/reset-wallet" && (
         <ResetWallet
           onResetComplete={() => {
             setMore("menu");
@@ -396,14 +446,14 @@ export default function App() {
           onClose={() => setMore("settings")}
         />
       )}
-      {tab === "more" && more === "settings/about" && (
+      {!notificationsOpen && tab === "more" && more === "settings/about" && (
         <About onClose={() => setMore("settings")} />
       )}
-      {tab === "more" && more === "settings/experimental" && (
+      {!notificationsOpen && tab === "more" && more === "settings/experimental" && (
         <Experimental onClose={() => setMore("settings")} />
       )}
 
-      {!operation && !scannerOpen && (
+      {!operation && !scannerOpen && !notificationsOpen && (
         <nav className="mw-tabbar" aria-label="Primary">
           {TABS.map((t) => (
             <button

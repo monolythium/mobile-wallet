@@ -917,3 +917,36 @@ textarea {
   color: var(--fg-100);
   outline: none;
 }
+
+/* Notifications — unread dot on a center row + bell badge in the top bar. */
+.mw-unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 8px rgba(var(--gold-glow), 0.6);
+  flex-shrink: 0;
+}
+
+/* Bell button wrapper positions the count badge over the top-right corner. */
+.mw-bell {
+  position: relative;
+}
+.mw-bell-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--gold);
+  color: #1a0f00;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 10px rgba(var(--gold-glow), 0.55);
+  pointer-events: none;
+}
