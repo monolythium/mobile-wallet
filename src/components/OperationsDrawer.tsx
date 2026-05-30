@@ -24,10 +24,9 @@ import {
   type BiometricStatus,
 } from "../sdk/auth";
 import { getProvider } from "../sdk/client";
-import {
-  recordTerminalNotification,
-  type NotifyDescriptor,
-} from "../sdk/notifications-record";
+import type { NotifyDescriptor } from "../sdk/notifications-record";
+import { enqueuePendingTx } from "../sdk/pending-tx-store";
+import { isRecordableTxHash } from "../sdk/pending-tx";
 import { useExperimentalV5 } from "../sdk/use-feature-flags";
 
 export type OperationKind = "send" | "receive" | "stake" | "buy" | "bridge" | "sign";
@@ -50,10 +49,12 @@ export interface OperationRequest {
   execute?: () => Promise<string>;
   /** Optional structured metadata for the in-app notifications center. When
    *  present AND the experimental surface is enabled, a successful
-   *  `execute()` arms a best-effort receipt poll that records a "confirmed"
-   *  / "failed" notification on the tx's REAL terminal transition (never
-   *  optimistically from broadcast acceptance). Omitted on operations that
-   *  don't map to a tracked tx (e.g. plain message signing). */
+   *  `execute()` ENQUEUES the tx into the durable tracked-tx registry; the
+   *  app-level reconcile poller then records a "confirmed" / "failed"
+   *  notification on the tx's REAL terminal transition (never optimistically
+   *  from broadcast acceptance) — even if this sheet is dismissed or the app
+   *  is restarted before the tx confirms. Omitted on operations that don't
+   *  map to a tracked tx (e.g. plain message signing). */
   notify?: NotifyDescriptor;
 }
 
@@ -157,17 +158,18 @@ export function OperationsDrawer({ request, onClose }: Props) {
         if (cancelled) return;
         setReceipt(txHash);
         setState("done");
-        // Recording hook (experimental-v5 only). Detached + best-effort:
-        // it polls for the tx's REAL terminal receipt and records a
-        // "confirmed"/"failed" notification on the explicit status bit —
-        // never the optimistic broadcast-ack shown above. Survives the
-        // drawer closing; never affects this flow.
+        // Tracked-tx enqueue (experimental-v5 only). Detached + best-effort:
+        // it adds the tx to the DURABLE registry so the app-level reconcile
+        // poller records a "confirmed"/"failed" notification on the explicit
+        // receipt status bit — never the optimistic broadcast-ack shown
+        // above. Because the registry persists, tracking survives this sheet
+        // closing AND an app restart; it never affects this flow.
         if (
           notificationsEnabled &&
           request.notify &&
-          isRecordableHash(txHash)
+          isRecordableTxHash(txHash)
         ) {
-          armTerminalNotification(txHash, request.notify);
+          enqueueTrackedTx(txHash, request.notify);
         }
       } catch (cause) {
         if (cancelled) return;
@@ -472,23 +474,26 @@ async function mockExecute(): Promise<string> {
   return `0x${"0".repeat(60)}demo`;
 }
 
-/** A real, canonical 32-byte tx hash worth tracking. Filters out the mock
- *  (`mockExecute`) hash and the empty-string sentinel the batch-staking path
- *  returns when nothing landed, so neither produces a notification. */
-function isRecordableHash(hash: string): boolean {
-  return /^0x[0-9a-fA-F]{64}$/.test(hash);
-}
-
-/** Resolve the broadcast-time chain id, then arm the detached terminal-
- *  receipt poll. Fire-and-forget: never awaited by the drawer, swallows
- *  every error. */
-function armTerminalNotification(txHash: string, notify: NotifyDescriptor): void {
+/** Resolve the broadcast-time chain id, then enqueue the tx into the durable
+ *  tracked-tx registry. Fire-and-forget: never awaited by the drawer,
+ *  swallows every error. The chain id is read once here (drives the dedupe
+ *  id); the app-level reconcile poller does the rest. If the chain-id read
+ *  fails the tx simply isn't tracked — no fabricated notification. */
+function enqueueTrackedTx(txHash: string, notify: NotifyDescriptor): void {
   void (async () => {
     try {
       const chainId = await getProvider().rpcClient.ethChainId();
-      await recordTerminalNotification(txHash, chainId, notify);
+      const chainIdHex = `0x${chainId.toString(16)}`;
+      await enqueuePendingTx({
+        txHash,
+        chainIdHex,
+        opKind: notify.kind,
+        amountDecimal: notify.amountDecimal,
+        counterparty: notify.counterparty,
+        submittedAtMs: Date.now(),
+      });
     } catch {
-      // Best-effort: a failed chain-id read or poll never surfaces here.
+      // Best-effort: a failed chain-id read or enqueue never surfaces here.
     }
   })();
 }

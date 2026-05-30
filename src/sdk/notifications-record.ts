@@ -1,29 +1,25 @@
-// Recording chokepoint — turn a just-submitted tx hash into a persisted
-// NotificationRecord on its REAL terminal transition, and never before.
+// One-shot recording helper — poll a just-submitted tx to its REAL terminal
+// transition and record a NotificationRecord on the explicit receipt status
+// bit, never before.
 //
-// Why a receipt poll (status fidelity)
-// ====================================
-// The mobile send / staking SDK returns the cluster-ack tx hash without
-// awaiting a receipt — that hash means "broadcast accepted", NOT "confirmed
-// on-chain". Recording a "confirmed" notification off that ack would be
-// optimism, which the model forbids. So this helper polls the node for the
-// authoritative receipt and records:
-//   - "confirmed"  iff the receipt's explicit status bit is 1
-//   - "failed"     iff the receipt's explicit status bit is 0
-// and records NOTHING while the tx is still pending or if the poll never
-// resolves a receipt (honest absence — no optimistic row, no fabricated
-// "failed"). The wallet shows the optimistic result in the OperationsDrawer
-// "done" pane as it always has; the notification only lands once the chain
-// has actually spoken.
+// SUPERSEDED for the live flow by the durable reconcile loop
+// ==========================================================
+// The OperationsDrawer used to arm this directly. It now enqueues the tx into
+// the durable registry (`pending-tx-store.ts`) instead, and the app-level
+// poller (`use-reconcile-poller.ts` → `reconcile.ts`) carries it to terminal
+// even after the sheet is dismissed or the app restarts. This module remains
+// as a self-contained, bounded one-shot tracker (used by tests, and available
+// to any caller that explicitly wants a fire-and-forget single-tx poll), and
+// shares the exact same receipt path via `probeTxTerminal`.
 //
-// This is the mobile analogue of the browser wallet's SW reconcile loop
-// (`dropConfirmedPendingByHash` → `recordNotification`), scoped to the one
-// tx the user just authorized. It runs as a detached best-effort task: it
-// is fire-and-forget from the drawer, swallows every error, and can never
-// throw back into the operation flow.
+// Status fidelity (unchanged): records "confirmed" iff the receipt status bit
+// is 1, "failed" iff it is 0, and NOTHING while pending or if the window
+// elapses without a receipt (honest absence — no optimistic row, no
+// fabricated "failed"). The drawer still shows the broadcast-ack in its
+// "done" pane; the notification only lands once the chain has spoken.
 
-import { getProvider } from "./client";
 import { recordNotification } from "./notifications-store";
+import { probeTxTerminal } from "./tx-terminal";
 import type { TxOpKind } from "./notifications";
 
 /** Structured notification metadata a screen attaches to its
@@ -47,43 +43,6 @@ export interface NotifyDescriptor {
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 90_000;
 
-/** Normalize a `bigint | number | null | undefined` block number to a finite
- *  number or null. */
-function blockToNumber(v: bigint | number | null | undefined): number | null {
-  if (typeof v === "bigint") {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  }
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  return null;
-}
-
-/** One probe of the chain for a tx's terminal status. Returns the explicit
- *  terminal outcome, or `null` while still pending / unknown. Best-effort:
- *  any RPC error is treated as "still pending" (returns null) so the caller
- *  keeps polling rather than recording garbage. */
-async function probeTerminal(
-  txHash: string,
-): Promise<{ status: "confirmed" | "failed"; blockNumber: number | null } | null> {
-  const rpc = getProvider().rpcClient;
-  // The receipt is authoritative: it carries the explicit status bit (1/0).
-  // A null receipt means the node has not mined/seen the tx yet (still
-  // pending). We intentionally do NOT fall back to `lyth_txStatus="found"`
-  // here — "found" tells us a tx landed in a block but not whether it
-  // succeeded or reverted, so it cannot satisfy the confirmed/failed
-  // fidelity rule on its own.
-  try {
-    const receipt = await rpc.ethGetTransactionReceipt(txHash);
-    if (receipt) {
-      const status = receipt.status === 1 ? "confirmed" : "failed";
-      return { status, blockNumber: blockToNumber(receipt.block_number) };
-    }
-  } catch {
-    // Transport / RPC hiccup — treat as "still pending" and keep polling.
-  }
-  return null;
-}
-
 /** Fire-and-forget: poll for the tx's real terminal receipt and record a
  *  notification on the explicit status bit only. Resolves (always) once a
  *  terminal status is recorded or the poll window elapses. Never throws.
@@ -105,7 +64,7 @@ export async function recordTerminalNotification(
   try {
     // First probe immediately, then on the interval until the deadline.
     for (;;) {
-      const terminal = await probeTerminal(txHash);
+      const terminal = await probeTxTerminal(txHash);
       if (terminal) {
         const { added } = await recordNotification({
           chainIdHex,
