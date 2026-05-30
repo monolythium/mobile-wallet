@@ -243,10 +243,6 @@ export default function App() {
         });
         break;
       }
-      case "walletconnect": {
-        setToast("WalletConnect is not supported on Monolythium.");
-        break;
-      }
       case "unknown":
       default: {
         setToast(`Unrecognised request: ${action.reason}`);

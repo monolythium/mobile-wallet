@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for the main mobile window. Includes deep-link + store + notification, used on every target (desktop + mobile) for URL scheme handling, WalletConnect v2 session persistence, and native OS notifications for confirmed/failed txs.",
+  "description": "Default capability set for the main mobile window. Includes deep-link + store + notification, used on every target (desktop + mobile) for URL scheme handling, local persistence (feature flags, notifications, tracked-tx state), and native OS notifications for confirmed/failed txs.",
   "windows": ["main"],
   "permissions": [
     "core:default",

@@ -2,7 +2,8 @@
 //   - biometric + keystore commands from `auth.rs` (Stage 3)
 //   - encrypted vault file commands from `vault.rs` (Stage 4 prep)
 //   - deep-link plugin (Stage 4 — `monolythium://` and `lyth:` schemes)
-//   - tauri-plugin-store (Stage 4 — WalletConnect v2 session persistence)
+//   - tauri-plugin-store (Stage 4 — local persistence: feature flags,
+//     notifications, tracked-tx state)
 //   - tauri-plugin-notification — native OS notifications for confirmed/
 //     failed txs, additive to the in-app notifications center; any-target
 //     like deep-link + store. The JS side requests permission on first use.
@@ -13,11 +14,11 @@
 // developer testing without a phone. The on-open-url callback fires the
 // `mw:deep-link` event with the raw URL list. The frontend (`src/sdk/
 // deeplink.ts`) parses scheme + payload and routes to the right surface
-// (Send / Sign / WC pairing).
+// (Send / Sign).
 //
-// `tauri-plugin-store` is also any-target — the WC v2 session topic +
-// peer metadata + accounts + expiry persists in `wc-sessions.v1.json`
-// next to the vault, owned by the JS `wcStore` wrapper.
+// `tauri-plugin-store` is also any-target — feature flags, the notifications
+// history, and the durable tracked-tx set persist in their own JSON stores
+// next to the vault, owned by the JS store wrappers.
 
 mod auth;
 mod vault;
