@@ -1,8 +1,15 @@
 // Activity — recent on-chain activity for the bound wallet address.
 // Polls `lyth_getAddressActivity` once on mount; the user pulls to
 // refresh (the chrome's existing scroll container does the heavy
-// lifting). Pending txs that the indexer hasn't picked up yet do not
-// appear here; a separate Pending screen handles those.
+// lifting).
+//
+// Pending section (experimental-v5): txs this wallet broadcast but that
+// haven't yet reached a terminal receipt live in the durable tracked-tx
+// registry. They surface here as a "Pending" section that clears itself as
+// the app-level reconcile loop carries each tx to confirmed/failed (and the
+// terminal notification fires). The indexer feed below is the authoritative
+// on-chain history; the pending section is the in-flight view of the SAME
+// registry the reconcile loop drives — never a fabricated terminal row.
 
 import { useEffect, useState } from "react";
 import { addressToTypedBech32 } from "@monolythium/core-sdk";
@@ -12,7 +19,10 @@ import {
   activityTitle,
   fetchAddressActivity,
 } from "../sdk/activity";
+import { isZeroAmount, type TxOpKind } from "../sdk/notifications";
+import type { PendingTx } from "../sdk/pending-tx";
 import { useExperimentalV5 } from "../sdk/use-feature-flags";
+import { usePendingTxs } from "../sdk/use-pending-tx";
 import { ActivityDetailSheet } from "../components/ActivityDetailSheet";
 
 interface Props {
@@ -29,6 +39,11 @@ export function Activity({ selfAddress }: Props) {
   // stay static (master behaviour) — no tap handler is attached.
   const detailEnabled = useExperimentalV5();
   const [selected, setSelected] = useState<AddressActivityEntry | null>(null);
+  // Outstanding tracked txs from the durable registry. The hook hydrates the
+  // store on mount and returns [] until then and whenever nothing is in
+  // flight; gated on the same flag, so OFF renders identically to master.
+  const pending = usePendingTxs();
+  const showPending = detailEnabled && pending.length > 0;
 
   const refresh = async (addr: string) => {
     setLoading(true);
@@ -59,6 +74,25 @@ export function Activity({ selfAddress }: Props) {
 
   return (
     <div className="mw-scroll">
+      {showPending && (
+        <div className="mw-card">
+          <div className="mw-card__head">
+            <h3>Pending</h3>
+            <div className="spacer" />
+            <span className="more">
+              {pending.length} in flight
+            </span>
+          </div>
+          {pending.map((p) => (
+            <PendingRow key={`${p.chainIdHex}:${p.txHash}`} entry={p} />
+          ))}
+          <div className="row-help" style={{ marginTop: 8, color: "var(--fg-400)" }}>
+            Awaiting on-chain confirmation. Resolves automatically — you&apos;ll
+            get a notification when it confirms or fails.
+          </div>
+        </div>
+      )}
+
       <div className="mw-card">
         <div className="mw-card__head">
           <h3>Activity</h3>
@@ -177,6 +211,45 @@ function ActivityRow({
             {(entry.weightBps / 100).toFixed(2)}%
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** In-flight label per operation kind — present tense, distinct from the
+ *  terminal "Sent"/"Staked" notification titles so a pending row never reads
+ *  as already-confirmed. */
+const PENDING_LABELS: Record<TxOpKind, string> = {
+  send: "Sending",
+  delegate: "Staking",
+  undelegate: "Unstaking",
+  redelegate: "Restaking",
+  claim: "Claiming rewards",
+  "emergency-key": "Registering backup key",
+  "agent-policy": "Updating agent policy",
+  contract_call: "Submitting transaction",
+};
+
+function PendingRow({ entry }: { entry: PendingTx }) {
+  const title = PENDING_LABELS[entry.opKind];
+  const showAmount = !isZeroAmount(entry.amountDecimal);
+  return (
+    <div className="mw-row" style={{ alignItems: "center" }}>
+      <div className="mw-row__icon" aria-hidden="true">
+        <span className="mw-spin" style={{ width: 14, height: 14 }} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="mw-row__name">{title}</div>
+        <div className="mw-row__sub mono" style={{ wordBreak: "break-all" }}>
+          {shortAddr(entry.txHash)}
+        </div>
+      </div>
+      <div className="mw-row__right">
+        {showAmount && (
+          <div className="primary" style={{ fontFamily: "var(--f-mono)", fontSize: 13 }}>
+            {entry.amountDecimal} LYTH
+          </div>
+        )}
       </div>
     </div>
   );

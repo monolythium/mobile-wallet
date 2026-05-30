@@ -37,6 +37,7 @@ import { About } from "./screens/settings/About";
 import { Experimental } from "./screens/settings/Experimental";
 import { useExperimentalV5 } from "./sdk/use-feature-flags";
 import { useUnreadCount } from "./sdk/use-notifications";
+import { useReconcilePoller } from "./sdk/use-reconcile-poller";
 import { fetchChainStatus, type ChainStatus } from "./sdk/client";
 import {
   buildOfflineWalletReadiness,
@@ -101,6 +102,13 @@ export default function App() {
   // hydrates the store on mount; it reports 0 until then and whenever the
   // flag is off (no records are ever recorded in that case).
   const unreadCount = useUnreadCount();
+  // Durable tracked-tx reconcile loop. ONE app-level poller carries every
+  // submitted tx to its real terminal state (confirmed/failed) and records
+  // the notification, surviving sheet-dismiss + app restart. Gated on the
+  // experimental flag and idle (no timer, no RPC) whenever the tracked-tx
+  // registry is empty, so an idle wallet — and any build with the flag off —
+  // behaves exactly like master.
+  useReconcilePoller(experimentalV5);
 
   // Probe the platform keystore once on mount. If a secret is present the
   // device has been onboarded; otherwise show the onboarding screen first.
