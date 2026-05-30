@@ -12,6 +12,8 @@ import {
   activityTitle,
   fetchAddressActivity,
 } from "../sdk/activity";
+import { useExperimentalV5 } from "../sdk/use-feature-flags";
+import { ActivityDetailSheet } from "../components/ActivityDetailSheet";
 
 interface Props {
   /** Hex address (`0x…`) bound to the unlocked vault. */
@@ -23,6 +25,10 @@ export function Activity({ selfAddress }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [coverage, setCoverage] = useState<string | null>(null);
+  // Experimental v5: tapping a row opens a tx-detail sheet. When OFF the rows
+  // stay static (master behaviour) — no tap handler is attached.
+  const detailEnabled = useExperimentalV5();
+  const [selected, setSelected] = useState<AddressActivityEntry | null>(null);
 
   const refresh = async (addr: string) => {
     setLoading(true);
@@ -94,14 +100,28 @@ export function Activity({ selfAddress }: Props) {
         )}
 
         {entries.map((entry, i) => (
-          <ActivityRow key={`${entry.blockHeight}-${entry.txIndex}-${entry.logIndex}-${i}`} entry={entry} />
+          <ActivityRow
+            key={`${entry.blockHeight}-${entry.txIndex}-${entry.logIndex}-${i}`}
+            entry={entry}
+            onTap={detailEnabled ? () => setSelected(entry) : null}
+          />
         ))}
       </div>
+
+      {detailEnabled && (
+        <ActivityDetailSheet entry={selected} onClose={() => setSelected(null)} />
+      )}
     </div>
   );
 }
 
-function ActivityRow({ entry }: { entry: AddressActivityEntry }) {
+function ActivityRow({
+  entry,
+  onTap,
+}: {
+  entry: AddressActivityEntry;
+  onTap: (() => void) | null;
+}) {
   const title = activityTitle(entry);
   const amount = activityAmountLyth(entry);
   const directionalSign = (() => {
@@ -112,7 +132,23 @@ function ActivityRow({ entry }: { entry: AddressActivityEntry }) {
   })();
 
   return (
-    <div className="mw-row" style={{ alignItems: "center" }}>
+    <div
+      className="mw-row"
+      style={{ alignItems: "center", cursor: onTap ? "pointer" : undefined }}
+      role={onTap ? "button" : undefined}
+      tabIndex={onTap ? 0 : undefined}
+      onClick={onTap ?? undefined}
+      onKeyDown={
+        onTap
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onTap();
+              }
+            }
+          : undefined
+      }
+    >
       <div className="mw-row__icon">
         {title === "Received" ? "↓" : title === "Sent" ? "↑" : "·"}
       </div>
