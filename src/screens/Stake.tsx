@@ -27,6 +27,7 @@ import {
 import type { OperationRequest } from "../components/OperationsDrawer";
 import {
   buildDelegateCalldata,
+  DELEGATION_PRECOMPILE,
   fetchClusterDirectory,
   fetchDelegations,
   submitStakingTx,
@@ -188,6 +189,15 @@ export function Stake({ selfAddress, openOperation }: Props) {
         { k: "Precompile", v: "0x…100a", mono: true },
       ],
       confirmLabel: "Sign and stake",
+      // Notifications-center metadata (experimental-v5). Delegation is
+      // weight-only today (principal rides as msg.value, 0n here), so the
+      // amount is "0" and the row/detail suppress it. Counterparty is the
+      // delegation precompile, never a contact name.
+      notify: {
+        kind: "delegate",
+        amountDecimal: "0",
+        counterparty: DELEGATION_PRECOMPILE.toLowerCase(),
+      },
       execute: async () => {
         const calldata = buildDelegateCalldata(clusterId, weightBps);
         // The SDK delegate(uint32,uint16) model sets the wallet-weight via

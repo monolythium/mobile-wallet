@@ -23,6 +23,12 @@ import {
   type AuthError,
   type BiometricStatus,
 } from "../sdk/auth";
+import { getProvider } from "../sdk/client";
+import {
+  recordTerminalNotification,
+  type NotifyDescriptor,
+} from "../sdk/notifications-record";
+import { useExperimentalV5 } from "../sdk/use-feature-flags";
 
 export type OperationKind = "send" | "receive" | "stake" | "buy" | "bridge" | "sign";
 
@@ -42,6 +48,13 @@ export interface OperationRequest {
   confirmLabel?: string;
   /** Returns the on-chain hash (or another receipt id) after the auth gate. */
   execute?: () => Promise<string>;
+  /** Optional structured metadata for the in-app notifications center. When
+   *  present AND the experimental surface is enabled, a successful
+   *  `execute()` arms a best-effort receipt poll that records a "confirmed"
+   *  / "failed" notification on the tx's REAL terminal transition (never
+   *  optimistically from broadcast acceptance). Omitted on operations that
+   *  don't map to a tracked tx (e.g. plain message signing). */
+  notify?: NotifyDescriptor;
 }
 
 interface Props {
@@ -57,6 +70,9 @@ export function OperationsDrawer({ request, onClose }: Props) {
   const [authMode, setAuthMode] = useState<"biometric" | "password">("biometric");
   const [password, setPassword] = useState("");
   const passwordResolverRef = useRef<((value: string | null) => void) | null>(null);
+  // In-app notifications are an experimental-v5 surface: when OFF, no record
+  // is ever written and the operation flow is byte-identical to master.
+  const notificationsEnabled = useExperimentalV5();
 
   // Reset whenever a fresh request arrives.
   useEffect(() => {
@@ -141,6 +157,18 @@ export function OperationsDrawer({ request, onClose }: Props) {
         if (cancelled) return;
         setReceipt(txHash);
         setState("done");
+        // Recording hook (experimental-v5 only). Detached + best-effort:
+        // it polls for the tx's REAL terminal receipt and records a
+        // "confirmed"/"failed" notification on the explicit status bit —
+        // never the optimistic broadcast-ack shown above. Survives the
+        // drawer closing; never affects this flow.
+        if (
+          notificationsEnabled &&
+          request.notify &&
+          isRecordableHash(txHash)
+        ) {
+          armTerminalNotification(txHash, request.notify);
+        }
       } catch (cause) {
         if (cancelled) return;
         setError((cause as Error)?.message ?? "operation failed");
@@ -151,7 +179,7 @@ export function OperationsDrawer({ request, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [state, request]);
+  }, [state, request, notificationsEnabled]);
 
   const submitPassword = () => {
     const r = passwordResolverRef.current;
@@ -442,4 +470,25 @@ async function mockExecute(): Promise<string> {
   // 32-byte zero-padded synthetic hash so the UI can render something
   // until Stage 3 replaces this with rpc.ethSendRawTransaction(...).
   return `0x${"0".repeat(60)}demo`;
+}
+
+/** A real, canonical 32-byte tx hash worth tracking. Filters out the mock
+ *  (`mockExecute`) hash and the empty-string sentinel the batch-staking path
+ *  returns when nothing landed, so neither produces a notification. */
+function isRecordableHash(hash: string): boolean {
+  return /^0x[0-9a-fA-F]{64}$/.test(hash);
+}
+
+/** Resolve the broadcast-time chain id, then arm the detached terminal-
+ *  receipt poll. Fire-and-forget: never awaited by the drawer, swallows
+ *  every error. */
+function armTerminalNotification(txHash: string, notify: NotifyDescriptor): void {
+  void (async () => {
+    try {
+      const chainId = await getProvider().rpcClient.ethChainId();
+      await recordTerminalNotification(txHash, chainId, notify);
+    } catch {
+      // Best-effort: a failed chain-id read or poll never surfaces here.
+    }
+  })();
 }

@@ -1,83 +1,181 @@
-// Alerts — wallet alert feed (adapted from designs/src/alerts.jsx).
-// AI is advisory: the screen surfaces signals, the Operations drawer is the
-// only path to a destructive action.
+// Notifications center — the in-app feed of the wallet's own tracked-tx
+// terminal transitions (confirmed / failed). Repurposed from the former
+// static "Alerts" mock: the hardcoded placeholder list is gone; this screen
+// now renders the live notification store.
+//
+// Read-only: this screen never CREATES a record. Recording happens only at
+// the OperationsDrawer terminal-transition chokepoint. Here we list (newest
+// first), mark-all-read, mark-one-read on open, and open a per-row detail
+// sheet (with a Monoscan tx link).
+//
+// Gated behind experimental-v5: when the flag is OFF the feed is suppressed
+// and a neutral empty state is shown (the bell that routes here is itself
+// only mounted when the flag is ON, so this is belt-and-braces).
 
+import { useCallback, useState } from "react";
 import { Icon } from "../components/Icon";
-import type { OperationRequest } from "../components/OperationsDrawer";
+import { NotificationDetailSheet } from "../components/NotificationDetailSheet";
+import { truncMiddle, relativeMs } from "../components/ActivityDetailSheet";
+import { addressToTypedBech32 } from "@monolythium/core-sdk";
+import { useExperimentalV5 } from "../sdk/use-feature-flags";
+import { useNotifications } from "../sdk/use-notifications";
+import {
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "../sdk/notifications-store";
+import {
+  isZeroAmount,
+  notificationTitle,
+  type NotificationRecord,
+} from "../sdk/notifications";
 
-interface Props {
-  openOperation: (req: OperationRequest) => void;
-}
+export function Alerts() {
+  const enabled = useExperimentalV5();
+  const records = useNotifications();
+  const [selected, setSelected] = useState<NotificationRecord | null>(null);
+  const [marking, setMarking] = useState(false);
 
-const ALERTS = [
-  {
-    id: "al1",
-    title: "Unusual recipient pattern",
-    body: "A draft transfer is going to a fresh address that has no on-chain history. The wallet recommends pausing.",
-    severity: "warn" as const,
-    actionLabel: "Review draft",
-  },
-  {
-    id: "al2",
-    title: "Cluster ratifying swap",
-    body: "Avengers cluster will swap slot-zeta in 2 epochs. Your delegation is unaffected.",
-    severity: "info" as const,
-    actionLabel: "Open operator",
-  },
-  {
-    id: "al3",
-    title: "New region available",
-    body: "AP-Sydney joined the mesh. Diversity bonus is now eligible.",
-    severity: "ok" as const,
-    actionLabel: "Browse clusters",
-  },
-];
+  const handleMarkAllRead = useCallback(async () => {
+    setMarking(true);
+    await markAllNotificationsRead();
+    setMarking(false);
+  }, []);
 
-export function Alerts({ openOperation }: Props) {
+  // Opening a record's detail also marks just that record read. The store
+  // emits on a successful flip, so the row's unread dot + the bell badge
+  // update on their own; no local optimistic patch needed.
+  const handleOpen = useCallback((rec: NotificationRecord) => {
+    setSelected(rec);
+    if (!rec.read) void markNotificationRead(rec.id);
+  }, []);
+
+  if (!enabled) {
+    return (
+      <div className="mw-scroll">
+        <div className="mw-card">
+          <p style={{ margin: 0, color: "var(--fg-300)", fontSize: 13, lineHeight: 1.55 }}>
+            Notifications are part of the experimental wallet surface. Enable it
+            in Settings to track your transactions here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const hasUnread = records.some((r) => !r.read);
+
   return (
     <div className="mw-scroll">
-      {ALERTS.map((a) => (
-        <div key={a.id} className="mw-card">
-          <div className="mw-card__head">
-            <h3>{a.title}</h3>
-            <div className="spacer" />
-            <span
-              className={`mw-halo${
-                a.severity === "warn" ? " warn" : a.severity === "ok" ? "" : ""
-              }`}
+      <div className="mw-card">
+        <div className="mw-card__head">
+          <h3>Notifications</h3>
+          <div className="spacer" />
+          {hasUnread && (
+            <button
+              type="button"
+              className="mw-btn"
+              onClick={() => void handleMarkAllRead()}
+              disabled={marking}
+              style={{ padding: "5px 10px", fontSize: 12 }}
             >
-              {a.severity === "warn"
-                ? "attention"
-                : a.severity === "ok"
-                  ? "ok"
-                  : "informational"}
-            </span>
-          </div>
-          <p style={{ margin: 0, fontSize: 13, color: "var(--fg-200)", lineHeight: 1.55 }}>
-            {a.body}
-          </p>
-          <button
-            className="mw-btn mw-btn--block"
-            style={{ marginTop: 14 }}
-            onClick={() =>
-              openOperation({
-                kind: "sign",
-                title: a.title,
-                summary: `${a.body}\n\nThis review records your decision in the audit trail.`,
-                details: [
-                  { k: "Severity", v: a.severity },
-                  { k: "Source", v: "wallet AI" },
-                  { k: "Action", v: a.actionLabel },
-                ],
-                confirmLabel: "Acknowledge",
-              })
-            }
-          >
-            <Icon name="alert" size={14} />
-            {a.actionLabel}
-          </button>
+              Mark all as read
+            </button>
+          )}
         </div>
-      ))}
+
+        {records.length === 0 ? (
+          <div className="row-help" style={{ marginTop: 8 }}>
+            No notifications yet. Confirmed and failed transactions you submit
+            will appear here.
+          </div>
+        ) : (
+          records.map((rec) => (
+            <NotificationRow
+              key={rec.id}
+              record={rec}
+              onOpen={() => handleOpen(rec)}
+            />
+          ))
+        )}
+      </div>
+
+      <NotificationDetailSheet record={selected} onClose={() => setSelected(null)} />
     </div>
   );
+}
+
+function NotificationRow({
+  record,
+  onOpen,
+}: {
+  record: NotificationRecord;
+  onOpen: () => void;
+}) {
+  const title = notificationTitle(record.kind, record.status);
+  const short = truncMiddle(displayCounterparty(record.counterparty));
+  const showAmount = !isZeroAmount(record.amountDecimal);
+  const sub = showAmount ? `${record.amountDecimal} LYTH · ${short}` : short;
+
+  return (
+    <div
+      className="mw-row"
+      style={{ alignItems: "center", cursor: "pointer" }}
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div
+        className="mw-row__icon"
+        style={{
+          color: record.status === "failed" ? "var(--err)" : "var(--ok)",
+        }}
+      >
+        {record.status === "failed" ? "!" : "✓"}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          className="mw-row__name"
+          style={{ display: "flex", alignItems: "center", gap: 7 }}
+        >
+          {title}
+          {!record.read && <span className="mw-unread-dot" aria-label="Unread" />}
+        </div>
+        <div className="mw-row__sub">{sub}</div>
+      </div>
+      <div className="mw-row__right">
+        <span
+          style={{
+            fontFamily: "var(--f-mono)",
+            fontSize: 11,
+            color: "var(--fg-400)",
+          }}
+        >
+          {relativeMs(record.createdAtMs)}
+        </span>
+        <span aria-hidden style={{ display: "inline-flex", marginLeft: 6, color: "var(--fg-400)" }}>
+          <Icon name="chev" size={13} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Records store a raw 0x… hex counterparty. Convert to the user-facing
+// mono1… bech32m form before display; fall back to the original string if it
+// isn't a recognisable hex address (e.g. a precompile).
+function displayCounterparty(s: string): string {
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) {
+    try {
+      return addressToTypedBech32("user", s);
+    } catch {
+      return s;
+    }
+  }
+  return s;
 }

@@ -143,6 +143,14 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
         { k: "Finality", v: FINALITY_POSTURE },
       ],
       confirmLabel: "Authorise and send",
+      // Notifications-center metadata (experimental-v5). Amount + 0x
+      // counterparty only — never the saved contact name, per the no-secrets
+      // rule. The drawer records this on the tx's real terminal receipt.
+      notify: {
+        kind: "send",
+        amountDecimal: amountLyth,
+        counterparty: typedBech32ToAddress(toBech32m, "user").hex.toLowerCase(),
+      },
       execute: async () => {
         const result = await sendLyth(
           {
