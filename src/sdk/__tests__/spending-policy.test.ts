@@ -18,9 +18,11 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  REGISTRY_DEFAULT_EXECUTION_UNIT_LIMIT,
   RpcClient,
   addressToTypedBech32,
   spendingPolicyAddressHex,
+  typedBech32ToAddress,
   SPENDING_POLICY_SELECTORS,
   composeClaimBoundMessage,
   packTimeWindow,
@@ -29,6 +31,9 @@ import {
 import {
   ML_DSA_65_PUBLIC_KEY_LEN,
   ML_DSA_65_SIGNATURE_LEN,
+  type MlDsa65Backend,
+  type NativeEvmTxFields,
+  buildPlaintextSubmission,
   pqm1MnemonicToMlDsa65Backend,
   generatePqm1Mnemonic,
 } from "@monolythium/core-sdk/crypto";
@@ -50,8 +55,36 @@ const SUB_HEX = "0x2222222222222222222222222222222222222222";
 const PRINCIPAL = addressToTypedBech32("user", PRINCIPAL_HEX);
 const SUB = addressToTypedBech32("user", SUB_HEX);
 
-const ZERO_ENCAPSULATION_KEY = "0x" + "00".repeat(1184);
 const TEST_CHAIN_ID = 69420n;
+
+// Mock RPC constants the wallet reads to build the plaintext tx.
+const MOCK_CHAIN_ID = 0x10f2cn; // 69420
+const MOCK_NONCE = 0x7n;
+const MOCK_UNIT_PRICE = 2_000n; // lyth_executionUnitPrice quote
+const MOCK_MAX_FEE = 6_000n; // quote × 3 safety multiplier
+
+/** Build the identical NativeEvmTxFields the wallet derives for a policy
+ *  write: registry default limit (250k), 0 native value, calldata as-is. */
+function expectedPolicyTxFields(data: string): NativeEvmTxFields {
+  const toHexNum = (n: bigint) => "0x" + n.toString(16);
+  return {
+    chainId: toHexNum(MOCK_CHAIN_ID),
+    nonce: toHexNum(MOCK_NONCE),
+    gasLimit: toHexNum(REGISTRY_DEFAULT_EXECUTION_UNIT_LIMIT),
+    maxFeePerGas: toHexNum(MOCK_MAX_FEE),
+    maxPriorityFeePerGas: toHexNum(MOCK_MAX_FEE),
+    to: spendingPolicyAddressHex(),
+    value: "0x0",
+    input: data,
+  };
+}
+
+function expectedPolicyTxHash(backend: MlDsa65Backend, data: string): string {
+  return buildPlaintextSubmission({
+    backend,
+    tx: expectedPolicyTxFields(data),
+  }).innerTxHashHex;
+}
 
 /** A complete §18.8 policy carrying every dimension. */
 function fullArgs(): SpendingPolicyArgs {
@@ -83,7 +116,10 @@ interface CapturedCall {
   params: unknown[];
 }
 
-function buildMockFetch(observed: CapturedCall[]): typeof fetch {
+function buildMockFetch(
+  observed: CapturedCall[],
+  meshEchoHash: string = "0x" + "ab".repeat(32),
+): typeof fetch {
   return async (_url, init) => {
     const body = JSON.parse((init as { body: string }).body);
     const method = body.method as string;
@@ -97,18 +133,16 @@ function buildMockFetch(observed: CapturedCall[]): typeof fetch {
       case "eth_getTransactionCount":
         result = "0x7";
         break;
-      case "eth_gasPrice":
-        result = "0x3b9aca00";
-        break;
-      case "lyth_getEncryptionKey":
+      case "lyth_executionUnitPrice":
         result = {
-          algo: "ml-kem-768",
-          epoch: "0x1",
-          encapsulationKey: ZERO_ENCAPSULATION_KEY,
+          executionUnitPriceLythoshi: MOCK_UNIT_PRICE.toString(),
+          basePricePerExecutionUnitLythoshi: "1000",
+          priorityTipLythoshi: "1000",
+          source: "latest_block",
         };
         break;
-      case "lyth_submitEncrypted":
-        result = "0x" + "ab".repeat(32);
+      case "mesh_submitTx":
+        result = meshEchoHash;
         break;
       case "lyth_getSpendingPolicy":
         result = {
@@ -140,8 +174,8 @@ function buildMockFetch(observed: CapturedCall[]): typeof fetch {
   };
 }
 
-function installProvider(observed: CapturedCall[]) {
-  const fetchFn = buildMockFetch(observed);
+function installProvider(observed: CapturedCall[], meshEchoHash?: string) {
+  const fetchFn = buildMockFetch(observed, meshEchoHash);
   const rpc = new RpcClient("http://test", { fetch: fetchFn });
   setProviderForTest(rpc);
 }
@@ -280,10 +314,9 @@ describe("emptyMerkleRoot", () => {
   });
 });
 
-describe("submitSpendingPolicyTx — write path", () => {
-  it("posts the claim calldata to spendingPolicyAddressHex() (0x…110C)", async () => {
+describe("submitSpendingPolicyTx — PLAINTEXT write path", () => {
+  it("posts the claim calldata to spendingPolicyAddressHex() (0x…110C) via mesh_submitTx", async () => {
     const observed: CapturedCall[] = [];
-    installProvider(observed);
     const args = fullArgs();
     const { pubkey, sig } = freshClaimMaterial(args);
     const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
@@ -292,23 +325,29 @@ describe("submitSpendingPolicyTx — write path", () => {
       subAccountPubkey: pubkey,
       subAccountSig: sig,
     });
+    const hash = expectedPolicyTxHash(backend, calldata);
+    installProvider(observed, hash);
+
     const result = await submitSpendingPolicyTx({
       fromBech32m: PRINCIPAL,
       data: calldata,
       unlockBackend: async () => backend,
     });
-    expect(result.txHash).toBe("0x" + "ab".repeat(32));
-    // The submit envelope is signed off-chain by the SDK, so the wallet's
-    // tx.to is not in the JSON-RPC params; assert the seam targets the
-    // canonical precompile address (encoded into the signed envelope).
+    expect(result.txHash).toBe(hash);
+    // The plaintext submit posts the 0x-bincode SignedTransaction; the
+    // wallet's tx.to (the precompile) is encoded into those signed bytes.
     expect(spendingPolicyAddressHex().toLowerCase()).toContain("110c");
-    // Drove the canonical pre-submit read sequence + the submit.
+    // Drove the canonical pre-submit reads + the live registry fee quote +
+    // the PLAINTEXT submit. NO encryption-key fetch, NO encrypted submit.
     const methods = observed.map((c) => c.method);
     expect(methods).toContain("eth_getTransactionCount");
-    expect(methods).toContain("eth_gasPrice");
     expect(methods).toContain("eth_chainId");
-    expect(methods).toContain("lyth_getEncryptionKey");
-    expect(methods).toContain("lyth_submitEncrypted");
+    expect(methods).toContain("lyth_executionUnitPrice");
+    expect(methods).not.toContain("lyth_getEncryptionKey");
+    expect(methods).not.toContain("lyth_submitEncrypted");
+    expect(methods[methods.length - 1]).toBe("mesh_submitTx");
+    // The principal address resolves to the typed user hex (sanity).
+    expect(typedBech32ToAddress(PRINCIPAL, "user").hex).toBe(PRINCIPAL_HEX);
   });
 });
 

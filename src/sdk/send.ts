@@ -1,32 +1,42 @@
-// Native Send-LYTH composer (post-EVM, encrypted-envelope wire shape).
+// Native Send-LYTH composer (post-EVM, optional-encryption chain).
 //
-// Stages of a real send:
-//   1. read sender nonce + native fee + chain id from the RpcClient
-//      (no key access yet);
-//   2. fetch the cluster's ML-KEM-768 encapsulation key via
-//      `lyth_getEncryptionKey`;
+// DEFAULT submit path is PLAINTEXT — the working inclusion path on the
+// live optional-encryption chain (`encrypted_mempool_required = false`).
+// Stages of a real plaintext send:
+//   1. read sender nonce + chain id from the RpcClient (no key access);
+//   2. resolve sane per-unit fee defaults from the live
+//      `lyth_executionUnitPrice` quote (SDK `resolveExecutionFee`, which
+//      clamps the priority tip <= max execution-unit price so the
+//      plaintext path never reverts with FeeMismatch);
 //   3. unlock the vault via the supplied backend factory (biometric or
 //      password) and produce a fresh `MlDsa65Backend`;
-//   4. ask the SDK's `buildEncryptedSubmission` to sign the inner
-//      native tx with ML-DSA-65 and ML-KEM-encrypt the envelope;
-//   5. submit via `lyth_submitEncrypted` through the RpcClient.
+//   4. ask the SDK's `submitTransactionWithPrivacy({ private: false })`
+//      to build the chain-side `SignedTransaction`, ML-DSA-65 sign over
+//      the canonical sighash, bincode-serialize, and POST it through
+//      `mesh_submitTx` (validating the node-echoed canonical tx hash).
 //
-// The ethers shim is no longer the canonical wire format — the chain
-// settled on a native encrypted-envelope tx (whitepaper §22, post-EVM
-// posture per the 2026-05-23 session decision). Wallets ship native
-// signing and submission only.
+// The PRIVATE (threshold-encrypted) path is a PREVIEW only. Passing
+// `privatePreview: true` routes through `submitTransactionWithPrivacy(
+// { private: true })` — the Ferveo encrypt-then-`lyth_submitEncrypted`
+// pipeline — but threshold-encrypted INCLUSION is NOT live on the chain
+// yet, so an encrypted tx will not confirm. The Send screen keeps the
+// "Private" toggle default-OFF and disabled (preview copy) precisely so a
+// user can never submit a non-confirming encrypted tx. Plaintext (OFF)
+// is the only working path today.
 
 import {
   LYTHOSHI_PER_LYTH,
+  TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT,
   parseLythToLythoshi,
+  resolveExecutionFee,
   typedBech32ToAddress,
 } from "@monolythium/core-sdk";
 import {
-  buildEncryptedSubmission,
   type EncryptionKey,
   type MempoolClass,
   type MlDsa65Backend,
   type NativeEvmTxFields,
+  submitTransactionWithPrivacy,
 } from "@monolythium/core-sdk/crypto";
 import { getProvider } from "./client";
 
@@ -37,7 +47,11 @@ export interface SendLythArgs {
   to: string;
   /** Decimal LYTH string, e.g. "12.5"; parsed as 8-decimal native lythoshi. */
   amountLyth: string;
-  /** Execution-unit limit. Defaults to 21_000 for a plain transfer. */
+  /**
+   * Execution-unit limit. Defaults to the SDK's sane transfer default
+   * (`TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT`, 100k — the ML-DSA-65-signed
+   * transfer cost with margin), NOT the old 21k intrinsic floor.
+   */
   executionUnitLimit?: bigint;
   /**
    * Optional explicit chain id override. When omitted we use whatever
@@ -47,10 +61,16 @@ export interface SendLythArgs {
   /** Optional hex data payload; most plain transfers leave this empty. */
   data?: string;
   /**
-   * Mempool class override. The chain defaults to encrypted; use
-   * `MempoolClass.PUBLIC` for protocol-owned action plans that explicitly
-   * opt out (e.g. emergency operator broadcasts). User sends never want
-   * this; leave undefined.
+   * Privacy toggle. DEFAULT (false / omitted) = PLAINTEXT via
+   * `mesh_submitTx` — the working inclusion path. `true` routes through
+   * the threshold-encrypted (Ferveo) path, which is a PREVIEW: encrypted
+   * inclusion is not live yet, so an encrypted tx will not confirm. The
+   * Send screen gates this OFF + disabled.
+   */
+  privatePreview?: boolean;
+  /**
+   * Mempool class override. Only consulted on the encrypted (preview)
+   * path. User sends never want this; leave undefined.
    */
   mempoolClass?: MempoolClass;
 }
@@ -58,14 +78,12 @@ export interface SendLythArgs {
 export interface SendLythResult {
   /** Canonical native tx hash the cluster acknowledged. */
   txHash: string;
-  /** Wire-bytes count of the inner unencrypted tx (for fee preview UI). */
-  innerWireBytes: number;
-  /** Inner native-tx sighash (hex) — useful for the Done pane diff. */
-  innerSighashHex: string;
   /** Chain id observed at broadcast time. */
   chainId: bigint;
   /** Effective amount sent (lythoshi). */
   amountLythoshi: bigint;
+  /** True when the encrypted (preview) path was used. */
+  encrypted: boolean;
 }
 
 export interface SendLythBackends {
@@ -80,9 +98,11 @@ function bigintToHex(n: bigint): string {
 
 /**
  * Compose a real Send LYTH against the live testnet via the SDK
- * RpcClient + native encrypted-envelope path. Throws on any wire-level
- * failure so the OperationsDrawer can promote the drawer to its `done`
- * stage with an error.
+ * RpcClient. DEFAULT path is PLAINTEXT (`submitTransactionWithPrivacy`
+ * with `private: false`) — what actually confirms on the
+ * optional-encryption chain. Throws on any wire-level failure so the
+ * OperationsDrawer can promote the drawer to its `done` stage with an
+ * error.
  */
 export async function sendLyth(
   backends: SendLythBackends,
@@ -92,70 +112,79 @@ export async function sendLyth(
   const toHex = requireTypedUserAddressHex(args.to, "to");
   const rpc = getProvider().rpcClient;
 
-  // 1. Sender nonce + execution-unit price + chain id, in parallel.
-  const [nonce, executionUnitPrice, chainIdFromChain] = await Promise.all([
+  // 1. Sender nonce + chain id, in parallel (no key access yet).
+  const [nonce, chainIdFromChain] = await Promise.all([
     rpc.ethGetTransactionCount(fromHex, "pending"),
-    rpc.ethGasPrice(),
     rpc.ethChainId(),
   ]);
 
   const chainId = args.chainId ?? chainIdFromChain;
-  const executionUnitLimit = args.executionUnitLimit ?? 21_000n;
   const amountLythoshi = parseLythToLythoshi(args.amountLyth);
 
-  // 2. Cluster encryption key (ML-KEM-768). Cached briefly inside the
-  //    RpcClient transport in production deployments; safe to call per-send.
-  const encryptionKeyRes = await rpc.lythGetEncryptionKey();
-  const encryptionKey: EncryptionKey = {
-    algo: encryptionKeyRes.algo,
-    epoch:
-      typeof encryptionKeyRes.epoch === "bigint"
-        ? encryptionKeyRes.epoch
-        : BigInt(encryptionKeyRes.epoch as unknown as string | number),
-    encapsulationKey: hexStringToBytes(encryptionKeyRes.encapsulationKey),
-  };
+  // 2. Sane per-unit fee defaults from the live quote. `resolveExecutionFee`
+  //    derives the max execution-unit price (live quote × safety headroom,
+  //    clamped to a floor) and clamps the priority tip <= that cap, so the
+  //    plaintext path never reverts with FeeMismatch.
+  const fee = await resolveExecutionFee(rpc, {
+    executionUnitLimit:
+      args.executionUnitLimit ?? TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT,
+  });
 
-  // 3. Unlock the vault for one signing op. The backend drops out of
+  const isPrivate = args.privatePreview === true;
+
+  // 3. Encryption key — only needed for the encrypted (preview) path.
+  let encryptionKey: EncryptionKey | undefined;
+  if (isPrivate) {
+    const encryptionKeyRes = await rpc.lythGetEncryptionKey();
+    encryptionKey = {
+      algo: encryptionKeyRes.algo,
+      epoch:
+        typeof encryptionKeyRes.epoch === "bigint"
+          ? encryptionKeyRes.epoch
+          : BigInt(encryptionKeyRes.epoch as unknown as string | number),
+      encapsulationKey: hexStringToBytes(encryptionKeyRes.encapsulationKey),
+    };
+  }
+
+  // 4. Unlock the vault for one signing op. The backend drops out of
   //    scope when the function returns.
   const backend = await backends.unlockBackend();
 
-  // 4. Build the inner native tx + ML-DSA-65 sign + ML-KEM-encrypt
-  //    envelope, all inside the SDK.
   const tx: NativeEvmTxFields = {
     chainId: bigintToHex(chainId),
     nonce: bigintToHex(nonce),
-    gasLimit: bigintToHex(executionUnitLimit),
-    maxFeePerGas: bigintToHex(executionUnitPrice),
-    maxPriorityFeePerGas: bigintToHex(executionUnitPrice),
+    gasLimit: bigintToHex(fee.gasLimit),
+    maxFeePerGas: bigintToHex(fee.maxFeePerGas),
+    maxPriorityFeePerGas: bigintToHex(fee.maxPriorityFeePerGas),
     to: toHex,
     value: bigintToHex(amountLythoshi),
     input: args.data ?? "0x",
   };
 
-  const wrapped = await buildEncryptedSubmission({
+  // 5. Submit. DEFAULT private:false -> plaintext mesh_submitTx (validated
+  //    node-echoed canonical hash). private:true -> encrypted (preview).
+  const txHash = await submitTransactionWithPrivacy({
+    client: rpc,
     backend,
     tx,
-    encryptionKey,
+    private: isPrivate,
+    ...(encryptionKey !== undefined ? { encryptionKey } : {}),
     ...(args.mempoolClass !== undefined ? { class: args.mempoolClass } : {}),
   });
 
-  // 5. Submit via lyth_submitEncrypted and return the cluster's tx hash.
-  const txHash = await rpc.lythSubmitEncrypted(wrapped.envelopeWireHex);
-
   return {
     txHash,
-    innerWireBytes: wrapped.innerWireBytes,
-    innerSighashHex: wrapped.innerSighashHex,
     chainId,
     amountLythoshi,
+    encrypted: isPrivate,
   };
 }
 
 /**
  * Decimal-LYTH preview helper for fee math. `feePerUnit` is the chain's
- * `eth_gasPrice` quantity (lythoshi per execution unit); multiplying by
- * the limit gives the maximum possible fee in lythoshi, which we then
- * format back to LYTH for display.
+ * per-execution-unit price (lythoshi); multiplying by the limit gives the
+ * maximum possible fee in lythoshi, which we then format back to LYTH for
+ * display.
  */
 export function previewMaxFeeLyth(
   feePerUnit: bigint,

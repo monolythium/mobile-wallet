@@ -24,8 +24,9 @@
 //
 //   1. unlock the SUB-ACCOUNT'S PQM-1 key, sign the bound message → 3309-byte
 //      sig + 1952-byte pubkey  (signClaimBoundMessage below);
-//   2. the PRINCIPAL signs + submits the OUTER encrypted-envelope tx
-//      (submitSpendingPolicyTx below).
+//   2. the PRINCIPAL signs + submits the OUTER tx via the SDK 0.3.11
+//      PLAINTEXT path (submitSpendingPolicyTx below; mesh_submitTx — the
+//      working inclusion path on the optional-encryption chain).
 //
 // A re-claim of an ALREADY-bound sub-account uses `setPolicy` (0x8da1a765),
 // which carries no fresh pubkey/sig. Revoke = `disable` (0xe6c09edf).
@@ -40,10 +41,9 @@
 // multi-entry Merkle-set builder is out of MVP scope.
 
 import {
-  buildEncryptedSubmission,
-  type EncryptionKey,
   type MlDsa65Backend,
   type NativeEvmTxFields,
+  submitTransactionWithPrivacy,
 } from "@monolythium/core-sdk/crypto";
 import {
   addressToTypedBech32,
@@ -54,6 +54,7 @@ import {
   encodeDisableCalldata,
   composeClaimBoundMessage,
   packTimeWindow,
+  resolveRegistryExecutionFee,
   spendingPolicyAddressHex,
   SET_POLICY_CLAIM_DOMAIN_TAG,
   ML_DSA_65_PUBLIC_KEY_LEN,
@@ -269,8 +270,8 @@ export interface SubmitSpendingPolicyTxArgs {
 }
 
 export interface SpendingPolicyTxResult {
+  /** Validated canonical native tx hash echoed by `mesh_submitTx`. */
   txHash: string;
-  innerSighashHex: string;
 }
 
 function bigintToHex(n: bigint): string {
@@ -279,9 +280,18 @@ function bigintToHex(n: bigint): string {
 
 /**
  * Submit a spending-policy precompile call (register / enable / disable). The
- * PRINCIPAL signs + submits the OUTER encrypted-envelope tx; `tx.to` is the
- * spending-policy precompile and `tx.value` is 0 (the policy write carries no
- * native value — funding the sub-account is a separate sendLyth).
+ * PRINCIPAL signs + submits the OUTER tx via the SDK 0.3.11 PLAINTEXT path
+ * (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`,
+ * with the node-echoed canonical tx hash validated) — the working inclusion
+ * path on the optional-encryption chain. `tx.to` is the spending-policy
+ * precompile and `tx.value` is 0 (the policy write carries no native value —
+ * funding the sub-account is a separate sendLyth).
+ *
+ * Fees use the SDK's REGISTRY defaults (`resolveRegistryExecutionFee`): the
+ * register/claim path carries ~5.3 KB of pubkey+sig and the register_op
+ * verify burns ~151k execution units, so the default limit is the raised
+ * 250k registry limit, with the per-unit price derived from the live quote
+ * and the priority tip clamped to it.
  */
 export async function submitSpendingPolicyTx(
   args: SubmitSpendingPolicyTxArgs,
@@ -289,41 +299,42 @@ export async function submitSpendingPolicyTx(
   const rpc = getProvider().rpcClient;
   const fromHex = typedBech32ToAddress(args.fromBech32m, "user").hex;
 
-  const [nonce, executionUnitPrice, chainId] = await Promise.all([
+  const [nonce, chainId] = await Promise.all([
     rpc.ethGetTransactionCount(fromHex, "pending"),
-    rpc.ethGasPrice(),
     rpc.ethChainId(),
   ]);
-  const encryptionKeyRes = await rpc.lythGetEncryptionKey();
+
+  // Registry/claim fee defaults: raised 250k limit + per-unit price derived
+  // from the live quote (with the priority tip clamped to the max), so the
+  // BLS-PoP pairing verify does not revert and the plaintext path never hits
+  // FeeMismatch.
+  const fee = await resolveRegistryExecutionFee(rpc, {
+    ...(args.executionUnitLimit !== undefined
+      ? { executionUnitLimit: args.executionUnitLimit }
+      : {}),
+  });
 
   const tx: NativeEvmTxFields = {
     chainId: bigintToHex(chainId),
     nonce: bigintToHex(nonce),
-    gasLimit: bigintToHex(args.executionUnitLimit ?? 300_000n),
-    maxFeePerGas: bigintToHex(executionUnitPrice),
-    maxPriorityFeePerGas: bigintToHex(executionUnitPrice),
+    gasLimit: bigintToHex(fee.gasLimit),
+    maxFeePerGas: bigintToHex(fee.maxFeePerGas),
+    maxPriorityFeePerGas: bigintToHex(fee.maxPriorityFeePerGas),
     to: SPENDING_POLICY_PRECOMPILE,
     value: "0x0",
     input: args.data,
   };
 
-  const encryptionKey: EncryptionKey = {
-    algo: encryptionKeyRes.algo,
-    epoch:
-      typeof encryptionKeyRes.epoch === "bigint"
-        ? encryptionKeyRes.epoch
-        : BigInt(encryptionKeyRes.epoch as unknown as string | number),
-    encapsulationKey: hexToBytes(encryptionKeyRes.encapsulationKey),
-  };
-
   const backend = await args.unlockBackend();
-  const wrapped = await buildEncryptedSubmission({
+  // Plaintext default (private: false) -> mesh_submitTx, the working
+  // inclusion path; returns the validated canonical native tx hash.
+  const txHash = await submitTransactionWithPrivacy({
+    client: rpc,
     backend,
     tx,
-    encryptionKey,
+    private: false,
   });
-  const txHash = await rpc.lythSubmitEncrypted(wrapped.envelopeWireHex);
-  return { txHash, innerSighashHex: wrapped.innerSighashHex };
+  return { txHash };
 }
 
 // -----------------------------------------------------------------------------
@@ -337,14 +348,4 @@ function byteLength(input: Uint8Array | readonly number[] | string): number {
     return Math.floor(stripped.length / 2);
   }
   return input.length;
-}
-
-function hexToBytes(s: string): Uint8Array {
-  const stripped = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
-  if (stripped.length % 2 !== 0) throw new Error("hex must have even length");
-  const out = new Uint8Array(stripped.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
 }

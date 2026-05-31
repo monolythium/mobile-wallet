@@ -17,15 +17,20 @@
 // All encoders + the precompile address come from `@monolythium/core-sdk`
 // (delegation.ts) so the wallet never diverges from the chain ABI.
 //
+// Submission uses the SDK 0.3.11 PLAINTEXT path by default
+// (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`)
+// — the working inclusion path on the optional-encryption chain. Staking
+// (delegate / undelegate / redelegate / claim) is never user-toggleable to
+// the encrypted preview path; it always goes plaintext.
+//
 // The chain may reject the call at the precompile-gate if delegation
 // isn't activated yet on the connected network — wallets surface the
 // chain's typed error verbatim.
 
 import {
-  buildEncryptedSubmission,
-  type EncryptionKey,
   type MlDsa65Backend,
   type NativeEvmTxFields,
+  submitTransactionWithPrivacy,
 } from "@monolythium/core-sdk/crypto";
 import type {
   ClusterDirectoryPageResponse,
@@ -38,9 +43,15 @@ import {
   encodeRedelegateCalldata,
   encodeClaimCalldata,
   delegationAddressHex,
+  resolveExecutionFee,
   DelegationPrecompileError,
 } from "@monolythium/core-sdk";
 import { getProvider } from "./client";
+
+/** Sane execution-unit limit for a delegation-precompile call. The
+ *  delegate / undelegate / redelegate / claim ops fit comfortably under
+ *  this; the SDK fee resolver derives the per-unit price + clamps the tip. */
+const DELEGATION_DEFAULT_EXECUTION_UNIT_LIMIT = 100_000n;
 
 /** Delegation precompile address (Law §5.4 / §7.6), resolved from the SDK
  *  so the wallet never hard-codes a precompile literal. */
@@ -49,8 +60,8 @@ export const DELEGATION_PRECOMPILE = delegationAddressHex();
 export type StakingAction = "delegate" | "undelegate" | "redelegate";
 
 export interface StakingTxResult {
+  /** Validated canonical native tx hash echoed by `mesh_submitTx`. */
   txHash: string;
-  innerSighashHex: string;
 }
 
 /** delegate(uint32 clusterId, uint16 weightBps) — thin wrapper over the SDK
@@ -100,8 +111,11 @@ export async function fetchDelegations(
 
 /**
  * Submit a delegation-precompile call (delegate / undelegate / redelegate
- * / claim). Drives the same encrypted-envelope path as `sendLyth`, with
- * `to` set to the delegation precompile address.
+ * / claim). Drives the SDK 0.3.11 PLAINTEXT path
+ * (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`,
+ * with the node-echoed canonical tx hash validated), with `to` set to the
+ * delegation precompile address. This is the working inclusion path on the
+ * optional-encryption chain.
  *
  * The SDK `delegate(uint32,uint16)` model sets the wallet-weight via
  * calldata but expects the principal LYTH stake to be sent as `msg.value`.
@@ -115,8 +129,8 @@ export interface SubmitStakingTxArgs {
   /** Principal stake (lythoshi) sent as `msg.value`. Required for delegate;
    *  0n (default) for undelegate / redelegate / claim. */
   valueLythoshi?: bigint;
-  /** Execution-unit limit. Delegation precompile calls typically need
-   *  ~50_000 units; bump if the chain rejects with out-of-execution. */
+  /** Execution-unit limit. Defaults to a sane delegation limit; the SDK fee
+   *  resolver derives the per-unit price + clamps the tip. */
   executionUnitLimit?: bigint;
 }
 
@@ -130,53 +144,43 @@ export async function submitStakingTx(
   const rpc = getProvider().rpcClient;
   const fromHex = typedBech32ToAddress(args.fromBech32m, "user").hex;
 
-  const [nonce, executionUnitPrice, chainId] = await Promise.all([
+  const [nonce, chainId] = await Promise.all([
     rpc.ethGetTransactionCount(fromHex, "pending"),
-    rpc.ethGasPrice(),
     rpc.ethChainId(),
   ]);
-  const encryptionKeyRes = await rpc.lythGetEncryptionKey();
+
+  // Sane per-unit fee defaults from the live quote: max execution-unit
+  // price derived (live quote × safety headroom, clamped to a floor) with
+  // the priority tip clamped <= that cap, so the plaintext path never
+  // reverts with FeeMismatch.
+  const fee = await resolveExecutionFee(rpc, {
+    executionUnitLimit:
+      args.executionUnitLimit ?? DELEGATION_DEFAULT_EXECUTION_UNIT_LIMIT,
+  });
 
   const tx: NativeEvmTxFields = {
     chainId: bigintToHex(chainId),
     nonce: bigintToHex(nonce),
-    gasLimit: bigintToHex(args.executionUnitLimit ?? 50_000n),
-    maxFeePerGas: bigintToHex(executionUnitPrice),
-    maxPriorityFeePerGas: bigintToHex(executionUnitPrice),
+    gasLimit: bigintToHex(fee.gasLimit),
+    maxFeePerGas: bigintToHex(fee.maxFeePerGas),
+    maxPriorityFeePerGas: bigintToHex(fee.maxPriorityFeePerGas),
     to: DELEGATION_PRECOMPILE,
     value: bigintToHex(args.valueLythoshi ?? 0n),
     input: args.data,
   };
 
-  const encryptionKey: EncryptionKey = {
-    algo: encryptionKeyRes.algo,
-    epoch:
-      typeof encryptionKeyRes.epoch === "bigint"
-        ? encryptionKeyRes.epoch
-        : BigInt(encryptionKeyRes.epoch as unknown as string | number),
-    encapsulationKey: hexToBytes(encryptionKeyRes.encapsulationKey),
-  };
-
   const backend = await args.unlockBackend();
-  const wrapped = await buildEncryptedSubmission({
+  // Plaintext default (private: false) -> mesh_submitTx, the working
+  // inclusion path; returns the validated canonical native tx hash.
+  const txHash = await submitTransactionWithPrivacy({
+    client: rpc,
     backend,
     tx,
-    encryptionKey,
+    private: false,
   });
-  const txHash = await rpc.lythSubmitEncrypted(wrapped.envelopeWireHex);
-  return { txHash, innerSighashHex: wrapped.innerSighashHex };
+  return { txHash };
 }
 
 /** Re-export the SDK's typed delegation error so screens can branch on it
  *  without importing the SDK directly. */
 export { DelegationPrecompileError };
-
-function hexToBytes(s: string): Uint8Array {
-  const stripped = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
-  if (stripped.length % 2 !== 0) throw new Error("hex must have even length");
-  const out = new Uint8Array(stripped.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}

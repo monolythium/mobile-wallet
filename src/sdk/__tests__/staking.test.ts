@@ -1,26 +1,32 @@
 /**
- * staking seam — delegation-precompile calldata + encrypted-envelope submit.
+ * staking seam — delegation-precompile calldata + PLAINTEXT submit.
  *
- * After the v5 SDK bump (0.3.10) the wallet's hand-rolled STAKING_SELECTORS
- * and flat-uint256 encoders were REPLACED by the SDK delegation encoders.
- * These tests pin the wallet wrappers to the SDK ABI so they can never
- * silently diverge again:
+ * After the v5 SDK bump the wallet's hand-rolled STAKING_SELECTORS and
+ * flat-uint256 encoders were REPLACED by the SDK delegation encoders.
+ * After the 0.3.11 bump the submit path is PLAINTEXT (mesh_submitTx). These
+ * tests pin the wallet wrappers to the SDK ABI + plaintext path:
  *   - buildDelegateCalldata / buildUndelegateCalldata match the SDK encoders
  *     (selectors 0x662337de / 0x914f3ca8)
  *   - undelegate takes the cluster ONLY (no weightBps arg)
- *   - submitStakingTx posts to delegationAddressHex() and drives the
- *     nonce/gasPrice/chainId -> encryption-key -> submit sequence
+ *   - submitStakingTx posts to delegationAddressHex() via the PLAINTEXT
+ *     mesh_submitTx path (NOT lyth_submitEncrypted), driving
+ *     nonce/chainId -> live fee quote -> submit
  */
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
   RpcClient,
+  TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT,
   addressToTypedBech32,
   delegationAddressHex,
   encodeDelegateCalldata,
   encodeUndelegateCalldata,
+  typedBech32ToAddress,
 } from "@monolythium/core-sdk";
 import {
+  type MlDsa65Backend,
+  type NativeEvmTxFields,
+  buildPlaintextSubmission,
   pqm1MnemonicToMlDsa65Backend,
   generatePqm1Mnemonic,
 } from "@monolythium/core-sdk/crypto";
@@ -33,14 +39,46 @@ import { resetProviderForTest, setProviderForTest } from "../client";
 
 const SELF_HEX = "0x1111111111111111111111111111111111111111";
 const SELF_TYPED = addressToTypedBech32("user", SELF_HEX);
-const ZERO_ENCAPSULATION_KEY = "0x" + "00".repeat(1184);
+
+const MOCK_CHAIN_ID = 0x10f2cn; // 69420
+const MOCK_NONCE = 0x7n;
+const MOCK_UNIT_PRICE = 2_000n;
+const MOCK_MAX_FEE = 6_000n; // 2000 quote × 3 safety multiplier
+// staking default limit (see DELEGATION_DEFAULT_EXECUTION_UNIT_LIMIT) ===
+// the SDK transfer default; pin to it so the reconstruction matches.
+const STAKING_LIMIT = TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT;
 
 interface CapturedCall {
   method: string;
   params: unknown[];
 }
 
-function buildMockFetch(observed: CapturedCall[]): typeof fetch {
+function expectedTxFields(data: string, valueLythoshi: bigint): NativeEvmTxFields {
+  const toHexNum = (n: bigint) => "0x" + n.toString(16);
+  return {
+    chainId: toHexNum(MOCK_CHAIN_ID),
+    nonce: toHexNum(MOCK_NONCE),
+    gasLimit: toHexNum(STAKING_LIMIT),
+    maxFeePerGas: toHexNum(MOCK_MAX_FEE),
+    maxPriorityFeePerGas: toHexNum(MOCK_MAX_FEE),
+    to: delegationAddressHex(),
+    value: toHexNum(valueLythoshi),
+    input: data,
+  };
+}
+
+function expectedTxHash(
+  backend: MlDsa65Backend,
+  data: string,
+  valueLythoshi: bigint,
+): string {
+  return buildPlaintextSubmission({
+    backend,
+    tx: expectedTxFields(data, valueLythoshi),
+  }).innerTxHashHex;
+}
+
+function buildMockFetch(observed: CapturedCall[], meshEchoHash: string): typeof fetch {
   return async (_url, init) => {
     const body = JSON.parse((init as { body: string }).body);
     const method = body.method as string;
@@ -54,18 +92,16 @@ function buildMockFetch(observed: CapturedCall[]): typeof fetch {
       case "eth_getTransactionCount":
         result = "0x7";
         break;
-      case "eth_gasPrice":
-        result = "0x3b9aca00";
-        break;
-      case "lyth_getEncryptionKey":
+      case "lyth_executionUnitPrice":
         result = {
-          algo: "ml-kem-768",
-          epoch: "0x1",
-          encapsulationKey: ZERO_ENCAPSULATION_KEY,
+          executionUnitPriceLythoshi: MOCK_UNIT_PRICE.toString(),
+          basePricePerExecutionUnitLythoshi: "1000",
+          priorityTipLythoshi: "1000",
+          source: "latest_block",
         };
         break;
-      case "lyth_submitEncrypted":
-        result = "0x" + "ab".repeat(32);
+      case "mesh_submitTx":
+        result = meshEchoHash;
         break;
       default:
         result = null;
@@ -77,8 +113,8 @@ function buildMockFetch(observed: CapturedCall[]): typeof fetch {
   };
 }
 
-function installProvider(observed: CapturedCall[]) {
-  const fetchFn = buildMockFetch(observed);
+function installProvider(observed: CapturedCall[], meshEchoHash: string) {
+  const fetchFn = buildMockFetch(observed, meshEchoHash);
   const rpc = new RpcClient("http://test", { fetch: fetchFn });
   setProviderForTest(rpc);
 }
@@ -107,33 +143,57 @@ describe("delegation calldata — pinned to SDK encoders", () => {
   });
 });
 
-describe("submitStakingTx — envelope submit", () => {
-  it("posts to delegationAddressHex() and drives the RPC sequence", async () => {
+describe("submitStakingTx — PLAINTEXT submit", () => {
+  it("posts to delegationAddressHex() via mesh_submitTx (not encrypted)", async () => {
     const observed: CapturedCall[] = [];
-    installProvider(observed);
     const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const data = buildDelegateCalldata(5, 1000);
+    const hash = expectedTxHash(backend, data, 0n);
+    installProvider(observed, hash);
 
     const result = await submitStakingTx({
       fromBech32m: SELF_TYPED,
-      data: buildDelegateCalldata(5, 1000),
+      data,
       valueLythoshi: 0n,
       unlockBackend: async () => backend,
     });
 
-    expect(result.txHash).toBe("0x" + "ab".repeat(32));
+    expect(result.txHash).toBe(hash);
 
-    // Reads run first (parallel), then encryption key, then submit.
+    // Reads run first, then the live fee quote, then the plaintext submit.
     const methods = observed.map((c) => c.method);
     expect(methods).toContain("eth_getTransactionCount");
-    expect(methods).toContain("eth_gasPrice");
     expect(methods).toContain("eth_chainId");
-    expect(methods).toContain("lyth_getEncryptionKey");
-    expect(methods[methods.length - 1]).toBe("lyth_submitEncrypted");
+    expect(methods).toContain("lyth_executionUnitPrice");
+    expect(methods).not.toContain("lyth_getEncryptionKey");
+    expect(methods).not.toContain("lyth_submitEncrypted");
+    expect(methods[methods.length - 1]).toBe("mesh_submitTx");
 
-    // The submitted envelope wire-hex is opaque (encrypted), so we assert the
-    // precompile target through the public SDK address rather than decoding it.
     expect(delegationAddressHex()).toBe(
       "0x000000000000000000000000000000000000100a",
     );
+
+    // Sanity: the from-address hex is the typed user address (no leak of
+    // the encrypted path's encryption-key fetch).
+    expect(typedBech32ToAddress(SELF_TYPED, "user").hex).toBe(SELF_HEX);
+  });
+
+  it("carries the principal as msg.value on a delegate", async () => {
+    const observed: CapturedCall[] = [];
+    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const data = buildDelegateCalldata(3, 2500);
+    const principal = 100_000_000_000n; // 1000 LYTH in lythoshi
+    const hash = expectedTxHash(backend, data, principal);
+    installProvider(observed, hash);
+
+    // If the wallet dropped or mangled msg.value the reconstructed hash
+    // would not match and the SDK echo-validation would throw.
+    const result = await submitStakingTx({
+      fromBech32m: SELF_TYPED,
+      data,
+      valueLythoshi: principal,
+      unlockBackend: async () => backend,
+    });
+    expect(result.txHash).toBe(hash);
   });
 });
