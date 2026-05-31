@@ -35,7 +35,8 @@
     "shortDescription": "Self-custodial post-quantum wallet for Monolythium",
     "longDescription": "Self-custodial mobile wallet for the Monolythium network. Post-quantum ML-DSA-65 signing, encrypted mempool, platform keychain + biometric vault. Send and receive LYTH, manage accounts, and connect to Monolythium dApps.",
     "iOS": {
-      "infoPlist": "Info.ios.plist"
+      "infoPlist": "Info.ios.plist",
+      "minimumSystemVersion": "16.0"
     },
     "android": {
       "minSdkVersion": 28
