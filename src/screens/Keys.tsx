@@ -1,92 +1,106 @@
-// Keys — list of signing keys + algos, with mobile-adapted single-column layout.
-// Adapted from designs/src/keys.jsx for the wallet's "More → Security" flow.
+// Keys — the wallet's signing key(s), for the "More → Security" flow.
+//
+// This wallet has exactly ONE signing key: the ML-DSA-65 (PQM-1 v1) key
+// derived from the device's sealed mnemonic on every unlock (see
+// sdk/vault.ts + sdk/signer.ts). It never holds a raw key on disk and there
+// is no hardware-pairing / passkey / multi-key surface on mobile. So this
+// screen renders a single honest card for this device's signer — its real
+// derived address and the correct algorithm — and nothing it can't read.
 
+import { useEffect, useState } from "react";
+import { addressToTypedBech32 } from "@monolythium/core-sdk";
 import { Icon } from "../components/Icon";
-import type { OperationRequest } from "../components/OperationsDrawer";
+import { vaultBoundAddress } from "../sdk/vault";
 
-interface Props {
-  openOperation: (req: OperationRequest) => void;
-}
+/** Resolution of the bound signer address. */
+type KeyState =
+  | { kind: "loading" }
+  | { kind: "none" }
+  | { kind: "ok"; bech32m: string };
 
-const DEMO_KEYS = [
-  {
-    id: "k1",
-    label: "Primary signer",
-    algo: "ML-DSA-44",
-    color: "#7ec7d8",
-    fingerprint: "8b41:7d2c:9a01:42a8",
-    used: "active",
-  },
-  {
-    id: "k2",
-    label: "Hardware backup",
-    algo: "Ed25519",
-    color: "#b8aaff",
-    fingerprint: "1f08:cd44:0917:e2b6",
-    used: "paired",
-  },
-  {
-    id: "k3",
-    label: "Mobile passkey",
-    algo: "Passkey",
-    color: "#7ee3c1",
-    fingerprint: "44ae:e103:55b8:0c5e",
-    used: "this device",
-  },
-];
+export function Keys() {
+  const [state, setState] = useState<KeyState>({ kind: "loading" });
 
-export function Keys({ openOperation }: Props) {
+  // Read the vault's plaintext address header (no biometric prompt) and
+  // convert it to the typed mono1… identity for display. This is the only
+  // key metadata the wallet exposes without unlocking.
+  useEffect(() => {
+    let cancelled = false;
+    void vaultBoundAddress().then((addr) => {
+      if (cancelled) return;
+      if (addr === null) {
+        setState({ kind: "none" });
+        return;
+      }
+      try {
+        setState({ kind: "ok", bech32m: addressToTypedBech32("user", addr) });
+      } catch {
+        setState({ kind: "none" });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="mw-scroll">
       <div className="mw-card">
         <div className="mw-card__head">
-          <h3>Signing keys</h3>
+          <h3>Signing key</h3>
           <div className="spacer" />
-          <span className="more">3 trusted</span>
+          <span className="more">{state.kind === "ok" ? "1 active" : "—"}</span>
         </div>
-        {DEMO_KEYS.map((k) => (
-          <div key={k.id} className="mw-row">
-            <div
-              className="mw-row__icon"
-              style={{ background: `${k.color}1f`, borderColor: `${k.color}55`, color: k.color }}
-            >
+
+        {state.kind === "loading" && (
+          <div className="row-help" style={{ marginTop: 8 }}>
+            Resolving this device&apos;s signer…
+          </div>
+        )}
+
+        {state.kind === "none" && (
+          <div className="row-help" style={{ marginTop: 8 }}>
+            No signing key on this device yet.
+          </div>
+        )}
+
+        {state.kind === "ok" && (
+          <div className="mw-row">
+            <div className="mw-row__icon">
               <Icon name="key" size={16} />
             </div>
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div className="mw-row__name">
-                {k.label}
-                <span className="ticker" style={{ color: k.color }}>
-                  {k.algo}
-                </span>
+                This device
+                <span className="ticker">ML-DSA-65</span>
               </div>
-              <div className="mw-row__sub">{k.fingerprint}</div>
+              <div
+                className="mw-row__sub mono"
+                style={{ wordBreak: "break-all" }}
+              >
+                {state.bech32m}
+              </div>
             </div>
             <div className="mw-row__right">
-              <span className="mw-halo">{k.used}</span>
+              <span className="mw-halo">active</span>
             </div>
           </div>
-        ))}
+        )}
       </div>
 
-      <button
-        className="mw-btn mw-btn--primary mw-btn--block"
-        onClick={() =>
-          openOperation({
-            kind: "sign",
-            title: "Add signing key",
-            summary:
-              "Pair a new key from a hardware wallet or another device. Pairing requires biometric authorization on this device.",
-            details: [
-              { k: "Algorithm", v: "ML-DSA-44 (post-quantum)" },
-              { k: "Source", v: "Pair via QR" },
-              { k: "Bond", v: "0.10 LYTH", mono: true },
-            ],
-            confirmLabel: "Begin pairing",
-          })
-        }
+      <p
+        style={{
+          fontSize: 11.5,
+          color: "var(--fg-400)",
+          textAlign: "center",
+          padding: "0 8px",
+          lineHeight: 1.55,
+        }}
       >
-        Pair another key
-      </button>
+        The signing key is derived from your recovery phrase on every unlock
+        (post-quantum ML-DSA-65, PQM-1 v1). The raw key is never stored on
+        disk.
+      </p>
     </div>
   );
 }

@@ -1,76 +1,69 @@
-// Audit — wallet-side audit feed (adapted from designs/src/audit.jsx).
-// Read-only mobile view; full export lives in the desktop wallet.
+// Audit — wallet-side audit trail of the transactions this device actually
+// signed and carried to a terminal receipt.
+//
+// This is the SAME wallet-local terminal-tx feed the notifications center
+// (Alerts) consumes — the durable tracked-tx store, recorded only at the
+// OperationsDrawer terminal-transition chokepoint. Nothing here is
+// fabricated: every row is a real confirmed/failed tx this device submitted.
+//
+// Gated behind experimental-v5 (the same flag the tracked-tx pipeline runs
+// under). When the flag is OFF nothing has ever been recorded, so the screen
+// shows a neutral empty state rather than a fake "verified" feed.
 
 import { Icon } from "../components/Icon";
-import { addressToTypedBech32 } from "@monolythium/core-sdk";
-
-const MIRA_ADDRESS = addressToTypedBech32(
-  "user",
-  "0x1111111111111111111111111111111111111111",
-);
-
-const ENTRIES = [
-  {
-    id: "a1",
-    when: "today 14:02",
-    actor: "this device",
-    action: "send 100.00 LYTH",
-    target: MIRA_ADDRESS,
-    halo: "ok" as const,
-  },
-  {
-    id: "a2",
-    when: "today 13:48",
-    actor: "Mira Bell",
-    action: "received 240.00 LYTH",
-    target: "you",
-    halo: "ok" as const,
-  },
-  {
-    id: "a3",
-    when: "yesterday 23:11",
-    actor: "this device",
-    action: "rotated mobile passkey",
-    target: "key fingerprint 44ae…0c5e",
-    halo: "warn" as const,
-  },
-  {
-    id: "a4",
-    when: "2 days ago",
-    actor: "hardware backup",
-    action: "approved cluster swap",
-    target: "Avengers → Avengers (slot-zeta)",
-    halo: "ok" as const,
-  },
-];
+import { relativeMs } from "../components/ActivityDetailSheet";
+import { useExperimentalV5 } from "../sdk/use-feature-flags";
+import { useNotifications } from "../sdk/use-notifications";
+import {
+  notificationBody,
+  notificationTitle,
+  type NotificationRecord,
+} from "../sdk/notifications";
 
 export function Audit() {
+  const enabled = useExperimentalV5();
+  const records = useNotifications();
+
+  if (!enabled) {
+    return (
+      <div className="mw-scroll">
+        <div className="mw-card">
+          <p
+            style={{
+              margin: 0,
+              color: "var(--fg-300)",
+              fontSize: 13,
+              lineHeight: 1.55,
+            }}
+          >
+            The audit trail records the transactions this device signs. It is
+            part of the experimental wallet surface — enable it in Settings to
+            keep a local history here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mw-scroll">
       <div className="mw-card">
         <div className="mw-card__head">
           <h3>Audit trail</h3>
           <div className="spacer" />
-          <span className="mw-halo">verified</span>
+          <span className="more">
+            {records.length === 0 ? "—" : `${records.length} signed`}
+          </span>
         </div>
-        {ENTRIES.map((e) => (
-          <div key={e.id} className="mw-tx">
-            <div className={`mw-tx__dir ${e.halo === "ok" ? "in" : "out"}`}>
-              <Icon name="audit" size={14} />
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <div className="mw-tx__label">{e.action}</div>
-              <div className="mw-tx__when">
-                {e.when} · {e.actor}
-              </div>
-            </div>
-            <div className="mw-row__right">
-              <span className={`mw-halo ${e.halo === "warn" ? "warn" : ""}`}>
-                {e.halo === "warn" ? "review" : "ok"}
-              </span>
-            </div>
+
+        {records.length === 0 ? (
+          <div className="row-help" style={{ marginTop: 8 }}>
+            No signed transactions yet. Actions you authorize on this device
+            appear here once they reach a terminal receipt.
           </div>
-        ))}
+        ) : (
+          records.map((rec) => <AuditRow key={rec.id} record={rec} />)
+        )}
       </div>
 
       <p
@@ -82,9 +75,33 @@ export function Audit() {
           lineHeight: 1.55,
         }}
       >
-        Tap an entry on desktop to inspect the signed envelope. Mobile shows the rolling
-        feed only.
+        This is the rolling local feed of transactions this device signed.
       </p>
+    </div>
+  );
+}
+
+function AuditRow({ record }: { record: NotificationRecord }) {
+  const title = notificationTitle(record.kind, record.status);
+  const sub = notificationBody(record.amountDecimal, record.counterparty);
+  const failed = record.status === "failed";
+
+  return (
+    <div className="mw-tx">
+      <div className={`mw-tx__dir ${failed ? "out" : "in"}`}>
+        <Icon name="audit" size={14} />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div className="mw-tx__label">{title}</div>
+        <div className="mw-tx__when">
+          {relativeMs(record.createdAtMs)} · {sub}
+        </div>
+      </div>
+      <div className="mw-row__right">
+        <span className={`mw-halo ${failed ? "err" : ""}`}>
+          {failed ? "failed" : "ok"}
+        </span>
+      </div>
     </div>
   );
 }

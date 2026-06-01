@@ -1,26 +1,26 @@
-// Ask — natural-language wallet helper (adapted from designs/src/ask.jsx).
-// AI is advisory only — every actionable answer routes through the
-// Operations drawer so a destructive step never bypasses the keychain.
+// Ask — natural-language wallet helper.
+//
+// Experimental surface (flag-gated). It does NOT parse a free-text request
+// into a draft transaction: there is no on-device natural-language model and
+// guessing a recipient/amount from a string is a safety hazard. Instead it
+// points the user at the real, typed flows (Send, Activity, Stake) where every
+// destructive step routes through the Operations drawer + keychain.
 
 import { useState } from "react";
-import { addressToTypedBech32 } from "@monolythium/core-sdk";
 import { Icon } from "../components/Icon";
 import type { OperationRequest } from "../components/OperationsDrawer";
 
 interface Props {
+  // Kept for signature compatibility with the host shell; this screen no
+  // longer drafts operations on its own (see file header).
   openOperation: (req: OperationRequest) => void;
 }
 
 const SUGGESTIONS = [
-  "How much LYTH did I send last week?",
-  "What is my staking APR?",
-  "Show me my last cluster swap.",
-  "Send 50 LYTH to Mira.",
+  "How do I send LYTH?",
+  "Where do I see my recent activity?",
+  "How do I stake to a cluster?",
 ];
-const MIRA_ADDRESS = addressToTypedBech32(
-  "user",
-  "0x1111111111111111111111111111111111111111",
-);
 
 interface Turn {
   role: "you" | "wallet";
@@ -30,50 +30,35 @@ interface Turn {
 const SEED: Turn[] = [
   {
     role: "wallet",
-    text: "I can answer questions about your balances, recent activity, and cluster. I can draft transfers, but you always sign on this device.",
+    text: "I can point you to the right place in the wallet. I won't draft a transaction for you — you compose and sign every transfer yourself on this device.",
   },
 ];
 
-export function Ask({ openOperation }: Props) {
+export function Ask(_props: Props) {
   const [turns, setTurns] = useState<Turn[]>(SEED);
   const [draft, setDraft] = useState("");
 
   const ask = (q: string) => {
     if (!q.trim()) return;
+    const lower = q.toLowerCase();
     const next: Turn[] = [...turns, { role: "you", text: q }];
-    if (q.toLowerCase().includes("send")) {
-      next.push({
-        role: "wallet",
-        text:
-          `Drafted: send 50 LYTH to Mira Bell (${shortAddr(MIRA_ADDRESS)}). Open the Operations drawer to sign and submit.`,
-      });
-      setTurns(next);
-      setDraft("");
-      // Surface the draft as an Operation so the user signs explicitly.
-      setTimeout(
-        () =>
-          openOperation({
-            kind: "send",
-            title: "Send LYTH",
-            summary: "Send 50 LYTH to Mira Bell on Monolythium v4.0 testnet.",
-            details: [
-              { k: "Asset", v: "LYTH" },
-              { k: "Amount", v: "50.00", mono: true },
-              { k: "To", v: "Mira Bell" },
-              { k: "Address", v: MIRA_ADDRESS, mono: true },
-              { k: "Drafted by", v: "wallet AI" },
-            ],
-            confirmLabel: "Sign and send",
-          }),
-        320,
-      );
-      return;
+
+    let reply: string;
+    if (lower.includes("send") || lower.includes("transfer") || lower.includes("pay")) {
+      reply =
+        "Open the Wallet tab and tap Send. You enter the recipient and amount yourself, then authorize with biometrics or your password — nothing is pre-filled.";
+    } else if (lower.includes("stake") || lower.includes("delegate") || lower.includes("cluster")) {
+      reply =
+        "The Stake tab lists clusters and your current delegations. Pick a cluster there to start a delegation.";
+    } else if (lower.includes("activity") || lower.includes("history") || lower.includes("recent")) {
+      reply =
+        "The Activity tab shows your on-chain history for this wallet, read live from the connected node.";
+    } else {
+      reply =
+        "I can guide you to the Wallet, Activity, and Stake tabs. For balances and history, those tabs read live from the chain — they're the source of truth.";
     }
-    next.push({
-      role: "wallet",
-      text:
-        "I can read on-chain history once the SDK is wired against your selected RPC endpoint. For now, the Tokens and Activity tabs hold the source of truth.",
-    });
+
+    next.push({ role: "wallet", text: reply });
     setTurns(next);
     setDraft("");
   };
@@ -155,9 +140,4 @@ export function Ask({ openOperation }: Props) {
       </button>
     </div>
   );
-}
-
-function shortAddr(s: string): string {
-  if (s.length <= 18) return s;
-  return `${s.slice(0, 10)}…${s.slice(-6)}`;
 }

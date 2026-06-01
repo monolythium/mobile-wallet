@@ -20,6 +20,7 @@ import { Home } from "./screens/Home";
 import { Keys } from "./screens/Keys";
 import { Audit } from "./screens/Audit";
 import { Ask } from "./screens/Ask";
+import { Network } from "./screens/Network";
 import { Onboarding } from "./screens/Onboarding";
 import { QrScanner } from "./screens/QrScanner";
 import { Send } from "./screens/Send";
@@ -38,7 +39,7 @@ import { Experimental } from "./screens/settings/Experimental";
 import { useExperimentalV5 } from "./sdk/use-feature-flags";
 import { useUnreadCount } from "./sdk/use-notifications";
 import { useReconcilePoller } from "./sdk/use-reconcile-poller";
-import { fetchChainStatus, type ChainStatus } from "./sdk/client";
+import { fetchChainStatus, initEndpoint, type ChainStatus } from "./sdk/client";
 import {
   buildOfflineWalletReadiness,
   loadWalletReadiness,
@@ -53,13 +54,12 @@ import {
 import "./styles/tokens.css";
 import "./styles/wallet.css";
 
-type Tab = "home" | "activity" | "stake" | "ask" | "more";
+type Tab = "home" | "activity" | "stake" | "more";
 
 const TABS: { k: Tab; label: string; icon: IconName }[] = [
   { k: "home", label: "Wallet", icon: "home" },
   { k: "activity", label: "Activity", icon: "activity" },
   { k: "stake", label: "Stake", icon: "stake" },
-  { k: "ask", label: "Ask", icon: "search" },
   { k: "more", label: "More", icon: "more" },
 ];
 
@@ -67,6 +67,8 @@ type MoreScreen =
   | "menu"
   | "keys"
   | "audit"
+  | "network"
+  | "ask"
   | "bridge"
   | "agents"
   | "settings"
@@ -129,6 +131,10 @@ export default function App() {
     let cancelled = false;
     const run = async () => {
       try {
+        // Pick up a persisted peer selection before the first read so the
+        // status probe + balance reads use the user's chosen endpoint.
+        await initEndpoint();
+        if (cancelled) return;
         const s = await fetchChainStatus();
         if (cancelled) return;
         setStatus(s);
@@ -384,10 +390,10 @@ export default function App() {
           statusError={statusError}
           readiness={readiness}
           selfAddress={selfAddress}
-          openOperation={openOperation}
           openSend={() => setSendOpen(true)}
           openReceive={() => setReceiveOpen(true)}
           onScan={openScanner}
+          goStake={() => setTab("stake")}
         />
       )}
       {!notificationsOpen && tab === "home" && sendOpen && selfAddress && (
@@ -409,14 +415,15 @@ export default function App() {
       {!notificationsOpen && tab === "stake" && (
         <Stake selfAddress={selfAddress} openOperation={openOperation} />
       )}
-      {!notificationsOpen && tab === "ask" && <Ask openOperation={openOperation} />}
       {!notificationsOpen && tab === "more" && more === "menu" && (
         <MoreMenu setMore={setMore} experimentalV5={experimentalV5} />
       )}
-      {!notificationsOpen && tab === "more" && more === "keys" && (
-        <Keys openOperation={openOperation} />
-      )}
+      {!notificationsOpen && tab === "more" && more === "keys" && <Keys />}
       {!notificationsOpen && tab === "more" && more === "audit" && <Audit />}
+      {!notificationsOpen && tab === "more" && more === "network" && <Network />}
+      {!notificationsOpen && tab === "more" && more === "ask" && experimentalV5 && (
+        <Ask openOperation={openOperation} />
+      )}
       {!notificationsOpen && tab === "more" && more === "bridge" && experimentalV5 && (
         <Bridge openOperation={openOperation} />
       )}
@@ -532,7 +539,7 @@ function MoreMenu({
           </div>
           <div>
             <div className="mw-row__name">Keys</div>
-            <div className="mw-row__sub">3 trusted · review and pair</div>
+            <div className="mw-row__sub">This device&apos;s signing key</div>
           </div>
           <div className="mw-row__right">
             <Icon name="chev" size={14} />
@@ -561,6 +568,22 @@ function MoreMenu({
         <div className="mw-card__head">
           <h3>Wallet</h3>
         </div>
+        <button
+          className="mw-row"
+          style={{ width: "100%", textAlign: "left" }}
+          onClick={() => setMore("network")}
+        >
+          <div className="mw-row__icon">
+            <Icon name="shield" size={14} />
+          </div>
+          <div>
+            <div className="mw-row__name">Network</div>
+            <div className="mw-row__sub">Change peer · latency</div>
+          </div>
+          <div className="mw-row__right">
+            <Icon name="chev" size={14} />
+          </div>
+        </button>
         {experimentalV5 && (
           <>
             <button
@@ -593,6 +616,24 @@ function MoreMenu({
                 <div className="mw-row__name">Bridge</div>
                 <div className="mw-row__sub">
                   Cross-chain route risk disclosure
+                </div>
+              </div>
+              <div className="mw-row__right">
+                <Icon name="chev" size={14} />
+              </div>
+            </button>
+            <button
+              className="mw-row"
+              style={{ width: "100%", textAlign: "left" }}
+              onClick={() => setMore("ask")}
+            >
+              <div className="mw-row__icon">
+                <Icon name="search" size={14} />
+              </div>
+              <div>
+                <div className="mw-row__name">Ask</div>
+                <div className="mw-row__sub">
+                  Natural-language wallet helper
                 </div>
               </div>
               <div className="mw-row__right">
@@ -632,11 +673,11 @@ function tabTitle(tab: Tab, more: MoreScreen): string {
       return "Activity";
     case "stake":
       return "Stake";
-    case "ask":
-      return "Ask";
     case "more":
       if (more === "keys") return "Keys";
       if (more === "audit") return "Audit";
+      if (more === "network") return "Network";
+      if (more === "ask") return "Ask";
       if (more === "bridge") return "Bridge";
       if (more === "agents") return "Agents";
       if (more === "settings") return "Settings";
