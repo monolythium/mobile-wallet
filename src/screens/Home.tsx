@@ -1,9 +1,15 @@
 // Home — primary mobile screen.
-// Hero balance + quick actions + tokens preview + readiness + chain conn.
+// Hero balance + quick actions + tokens card + readiness + chain conn.
+//
+// The hero + tokens card render the LIVE native LYTH balance for the bound
+// wallet address, read through `loadChainSnapshot` (eth_getBalance) the same
+// way Activity/Stake read live RPC. There is no on-chain price oracle and no
+// token-list index, so USD is rendered as an honest em-dash — never a
+// fabricated "$0.00" dressed up as a real fiat value.
 
+import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
-import type { OperationRequest } from "../components/OperationsDrawer";
-import type { ChainStatus } from "../sdk/client";
+import { loadChainSnapshot, type ChainSnapshot, type ChainStatus } from "../sdk/client";
 import type { WalletReadiness } from "../sdk/readiness";
 
 interface Props {
@@ -13,35 +19,66 @@ interface Props {
   /** Internal 0x address bound to the unlocked vault. `null` until
    *  the bound address has been resolved; public UI renders typed mono1. */
   selfAddress: string | null;
-  openOperation: (req: OperationRequest) => void;
-  /** Opens the Send compose overlay. */
   openSend: () => void;
   /** Opens the Receive QR overlay. */
   openReceive: () => void;
   /** Opens the full-screen QR scanner. */
   onScan: () => void;
+  /** Navigate to the Stake tab (the real delegation flow). */
+  goStake: () => void;
 }
-
-// TODO(monolythium-vision): replace with live MRC balances + a price
-// feed once the indexer surfaces a token list for the user address.
-const DEMO_TOKENS = [
-  { sym: "LYTH", name: "Monolythium", amount: 0, priceUsd: 0, chg24h: 0, primary: true },
-] as const;
 
 const fmt = (n: number, f = 2) =>
   n.toLocaleString(undefined, { minimumFractionDigits: f, maximumFractionDigits: f });
+
+/** Local load state for the bound-address balance read. */
+type BalanceState =
+  | { kind: "loading" }
+  | { kind: "ok"; snapshot: ChainSnapshot }
+  | { kind: "error"; message: string };
 
 export function Home({
   status,
   statusError,
   readiness,
   selfAddress,
-  openOperation,
   openSend,
   openReceive,
   onScan,
+  goStake,
 }: Props) {
-  const totalUsd = DEMO_TOKENS.reduce((a, t) => a + t.amount * t.priceUsd, 0);
+  const [balance, setBalance] = useState<BalanceState>({ kind: "loading" });
+
+  // Read the live native balance for the bound address. Mirrors Activity:
+  // one read on mount / when the address resolves; the snapshot carries its
+  // own RPC-error state so an offline node renders honestly rather than 0.
+  useEffect(() => {
+    if (selfAddress === null) return;
+    let cancelled = false;
+    setBalance({ kind: "loading" });
+    void (async () => {
+      try {
+        const snapshot = await loadChainSnapshot(selfAddress);
+        if (cancelled) return;
+        if (snapshot.error) {
+          setBalance({ kind: "error", message: snapshot.error.message });
+        } else {
+          setBalance({ kind: "ok", snapshot });
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setBalance({
+            kind: "error",
+            message: (cause as Error)?.message ?? "balance unavailable",
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selfAddress]);
+
   const canSend = selfAddress !== null;
   const canReceive = selfAddress !== null;
 
@@ -50,13 +87,11 @@ export function Home({
       <div className="mw-card mw-hero">
         <div className="mw-hero__label">Total balance</div>
         <div className="mw-hero__amount">
-          ${fmt(totalUsd)}
-          <span className="tok">USD</span>
+          {/* No on-chain price oracle: USD is honestly unavailable. */}
+          —<span className="tok">USD</span>
         </div>
         <div className="mw-hero__meta">
-          <span>
-            Available <b>{fmt(DEMO_TOKENS[0].amount, 0)} LYTH</b>
-          </span>
+          <HeroBalanceMeta selfAddress={selfAddress} balance={balance} />
         </div>
         <div className="mw-actions">
           <button
@@ -81,22 +116,7 @@ export function Home({
             </span>
             <span>Receive</span>
           </button>
-          <button
-            className="mw-act"
-            onClick={() =>
-              openOperation({
-                kind: "stake",
-                title: "Stake with cluster",
-                summary:
-                  "Delegate LYTH to a DVT cluster. Liquid stake — exit any time, no lockup.",
-                details: [
-                  { k: "Cluster", v: "(picker coming soon)" },
-                  { k: "Exit", v: "Instant" },
-                ],
-                confirmLabel: "Coming soon",
-              })
-            }
-          >
+          <button className="mw-act" onClick={goStake}>
             <span className="ico">
               <Icon name="stake" size={18} />
             </span>
@@ -115,36 +135,11 @@ export function Home({
         </div>
       </div>
 
-      <div className="mw-card">
-        <div className="mw-card__head">
-          <h3>Tokens</h3>
-          <div className="spacer" />
-          <span className="more">{DEMO_TOKENS.length} held</span>
-        </div>
-        {DEMO_TOKENS.map((t) => (
-          <div key={t.sym} className="mw-row">
-            <div className={`mw-row__icon${t.primary ? " native" : ""}`}>
-              {t.sym.slice(0, 3)}
-            </div>
-            <div>
-              <div className="mw-row__name">
-                {t.name}
-                <span className="ticker">{t.sym}</span>
-              </div>
-              <div className="mw-row__sub">
-                {fmt(t.amount, 2)} {t.sym}
-              </div>
-            </div>
-            <div className="mw-row__right">
-              <div className="primary">${fmt(t.amount * t.priceUsd)}</div>
-            </div>
-          </div>
-        ))}
-      </div>
+      <TokensCard selfAddress={selfAddress} balance={balance} />
 
       <div className="mw-card">
         <div className="mw-card__head">
-          <h3>v4.1 readiness</h3>
+          <h3>Wallet readiness</h3>
           <div className="spacer" />
           <span className={`mw-readiness__state ${readiness?.state ?? "blocked"}`}>
             {readiness === null ? "checking" : readiness.state}
@@ -176,6 +171,94 @@ export function Home({
       </div>
 
       <ChainConnection status={status} error={statusError} />
+    </div>
+  );
+}
+
+/** Hero "Available …" line. Honest about every state: resolving identity,
+ *  loading the balance, an RPC error, or the real native LYTH amount. */
+function HeroBalanceMeta({
+  selfAddress,
+  balance,
+}: {
+  selfAddress: string | null;
+  balance: BalanceState;
+}) {
+  if (selfAddress === null) {
+    return <span>Resolving wallet identity…</span>;
+  }
+  if (balance.kind === "loading") {
+    return (
+      <span>
+        Available <b>… LYTH</b>
+      </span>
+    );
+  }
+  if (balance.kind === "error") {
+    return (
+      <span>
+        Available <b>— LYTH</b> · balance unavailable
+      </span>
+    );
+  }
+  return (
+    <span>
+      Available <b>{fmt(balance.snapshot.balanceLyth)} LYTH</b>
+    </span>
+  );
+}
+
+/** Tokens card. The chain exposes only the native LYTH balance — there is no
+ *  MRC token-list index for an arbitrary address — so this card shows the one
+ *  honest row (native LYTH) and labels the count accordingly. USD stays an
+ *  em-dash for want of a price oracle. */
+function TokensCard({
+  selfAddress,
+  balance,
+}: {
+  selfAddress: string | null;
+  balance: BalanceState;
+}) {
+  const heldLabel =
+    balance.kind === "ok" ? "1 held" : balance.kind === "loading" ? "loading" : "—";
+
+  return (
+    <div className="mw-card">
+      <div className="mw-card__head">
+        <h3>Tokens</h3>
+        <div className="spacer" />
+        <span className="more">{heldLabel}</span>
+      </div>
+
+      {selfAddress === null ? (
+        <div className="row-help" style={{ marginTop: 8 }}>
+          Resolving wallet identity…
+        </div>
+      ) : balance.kind === "error" ? (
+        <div className="row-help" style={{ color: "var(--err)", marginTop: 8 }}>
+          Couldn&apos;t read your balance from the connected node. Recent
+          transactions you submit will still confirm on-chain.
+        </div>
+      ) : (
+        <div className="mw-row">
+          <div className="mw-row__icon native">LYT</div>
+          <div>
+            <div className="mw-row__name">
+              Monolythium
+              <span className="ticker">LYTH</span>
+            </div>
+            <div className="mw-row__sub">
+              {balance.kind === "loading"
+                ? "… LYTH"
+                : `${fmt(balance.snapshot.balanceLyth)} LYTH`}
+            </div>
+          </div>
+          <div className="mw-row__right">
+            {/* No price oracle on chain — USD is honestly unavailable. */}
+            <div className="primary">—</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

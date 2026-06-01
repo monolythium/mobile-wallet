@@ -16,6 +16,11 @@ import {
   getRpcEndpoints,
   type RpcClientOptions,
 } from "@monolythium/core-sdk";
+import {
+  listPeers,
+  readSelectedEndpoint,
+  writeSelectedEndpoint,
+} from "./peers";
 
 /**
  * Default RPC endpoint. Honors `VITE_MONO_RPC_URL` at build time so a
@@ -32,6 +37,27 @@ function defaultEndpoint(): string {
 }
 
 let _client: RpcClient | null = null;
+/** User-selected endpoint override, hydrated from the persisted peer store at
+ *  init. `null` ⇒ no override; `defaultEndpoint()` is used. */
+let _override: string | null = null;
+let _clientOptions: RpcClientOptions = {};
+
+type EndpointListener = (endpoint: string) => void;
+const endpointListeners = new Set<EndpointListener>();
+
+/** The endpoint the client is (or would be) built against right now. */
+function effectiveEndpoint(): string {
+  return _override ?? defaultEndpoint();
+}
+
+function buildClient(): RpcClient {
+  return new RpcClient(effectiveEndpoint(), {
+    headers: {
+      "x-mono-client": "monolythium-wallet-mobile/0.1.2",
+    },
+    ..._clientOptions,
+  });
+}
 
 /**
  * Lazily-constructed singleton `RpcClient`. First call constructs;
@@ -46,12 +72,10 @@ export interface ProviderHandle {
 
 export function getProvider(options: RpcClientOptions = {}): ProviderHandle {
   if (_client === null) {
-    _client = new RpcClient(defaultEndpoint(), {
-      headers: {
-        "x-mono-client": "monolythium-wallet-mobile/0.1.2",
-      },
-      ...options,
-    });
+    // Remember the first-call options so a later `setEndpoint()` rebuild
+    // carries the same headers / fetch impl.
+    _clientOptions = options;
+    _client = buildClient();
   }
   return { rpcClient: _client };
 }
@@ -62,6 +86,8 @@ export function getProvider(options: RpcClientOptions = {}): ProviderHandle {
  */
 export function resetProviderForTest(): void {
   _client = null;
+  _override = null;
+  _clientOptions = {};
 }
 
 /**
@@ -72,6 +98,62 @@ export function resetProviderForTest(): void {
 export function setProviderForTest(client: RpcClient): void {
   _client = client;
 }
+
+/**
+ * The endpoint the active client is talking to. Reflects a persisted /
+ * in-session override when one is set, otherwise the shipped default.
+ */
+export function currentEndpoint(): string {
+  return effectiveEndpoint();
+}
+
+/**
+ * Hydrate the persisted peer selection on app mount. If a valid endpoint was
+ * persisted (and it differs from the current one), it becomes the override
+ * and the client is rebuilt so subsequent live reads use it. Best-effort:
+ * a store-read failure leaves the shipped default in place. Subscribers are
+ * notified only when the effective endpoint actually changes.
+ */
+export async function initEndpoint(): Promise<void> {
+  const before = effectiveEndpoint();
+  const persisted = await readSelectedEndpoint();
+  if (persisted && persisted.length > 0 && persisted !== before) {
+    _override = persisted;
+    _client = buildClient();
+    emitEndpoint();
+  }
+}
+
+/**
+ * Switch the active RPC endpoint: rebuild the singleton client against `url`,
+ * persist the choice, and notify subscribers so live reads re-run against the
+ * new peer. No-op (still persists) when `url` already matches the active
+ * endpoint.
+ */
+export async function setEndpoint(url: string): Promise<void> {
+  const changed = url !== effectiveEndpoint();
+  _override = url;
+  _client = buildClient();
+  await writeSelectedEndpoint(url);
+  if (changed) emitEndpoint();
+}
+
+/** Subscribe to endpoint changes. Returns an unsubscribe fn. The callback
+ *  receives the new effective endpoint. */
+export function subscribeEndpoint(cb: EndpointListener): () => void {
+  endpointListeners.add(cb);
+  return () => {
+    endpointListeners.delete(cb);
+  };
+}
+
+function emitEndpoint(): void {
+  const ep = effectiveEndpoint();
+  for (const l of endpointListeners) l(ep);
+}
+
+// Re-export the peer catalogue so screens import a single chain-IO seam.
+export { listPeers };
 
 /**
  * Lightweight chain status used by the Home screen halo.
