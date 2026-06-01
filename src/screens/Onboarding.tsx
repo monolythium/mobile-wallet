@@ -50,7 +50,7 @@ type Step =
   | "enrolling"
   | "done";
 
-const MIN_PASSWORD_LEN = 8;
+const MIN_PASSWORD_LEN = 12;
 const PQM1_WORDS = 24;
 
 export function Onboarding({ onDone }: Props) {
