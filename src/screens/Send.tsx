@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ADDRESS_KIND_HRPS,
+  NATIVE_LYTH_DECIMALS,
   TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT,
   addressToTypedBech32,
   resolveExecutionFee,
@@ -111,8 +112,8 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
     }
     const trimmedAmt = amount.trim();
     if (!trimmedAmt) return "Amount is required.";
-    if (!/^\d+(\.\d{1,8})?$/.test(trimmedAmt)) {
-      return "Amount must have at most 8 decimal places.";
+    if (!new RegExp(`^\\d+(\\.\\d{1,${NATIVE_LYTH_DECIMALS}})?$`).test(trimmedAmt)) {
+      return `Amount must have at most ${NATIVE_LYTH_DECIMALS} decimal places.`;
     }
     if (Number(trimmedAmt) === 0) return "Amount must be greater than 0.";
     if (trimmedTo.toLowerCase() === selfBech32m.toLowerCase()) {
