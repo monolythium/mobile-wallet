@@ -182,7 +182,7 @@ describe("submitStakingTx — PLAINTEXT submit", () => {
     const observed: CapturedCall[] = [];
     const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
     const data = buildDelegateCalldata(3, 2500);
-    const principal = 100_000_000_000n; // 1000 LYTH in lythoshi
+    const principal = 100_000_000_000n; // arbitrary lythoshi principal (echo-validated)
     const hash = expectedTxHash(backend, data, principal);
     installProvider(observed, hash);
 

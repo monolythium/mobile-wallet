@@ -214,15 +214,16 @@ describe("sendLyth — DEFAULT path is PLAINTEXT", () => {
 
 describe("previewMaxFeeLyth", () => {
   it("formats whole LYTH with no decimal when exact", () => {
-    // 1e8 lythoshi per LYTH × 21_000 = 2.1e12 lythoshi total. Dividing
-    // by LYTHOSHI_PER_LYTH (1e8) gives 21_000 LYTH whole-cell math.
-    const oneLythPerUnit = 100_000_000n; // 1 LYTH in lythoshi
+    // 1e18 lythoshi per LYTH × 21_000 = 2.1e22 lythoshi total. Dividing
+    // by LYTHOSHI_PER_LYTH (1e18) gives 21_000 LYTH whole-cell math.
+    const oneLythPerUnit = 1_000_000_000_000_000_000n; // 1 LYTH in lythoshi
     expect(previewMaxFeeLyth(oneLythPerUnit, 21_000n)).toBe("21000");
   });
 
   it("formats fractional LYTH and trims trailing zeros", () => {
-    // 1 lythoshi × 21_000 = 21_000 lythoshi → 0.00021 LYTH.
-    expect(previewMaxFeeLyth(1n, 21_000n)).toBe("0.00021");
+    // 1 lythoshi × 21_000 = 21_000 lythoshi → 0.000000000000021 LYTH
+    // at native 18-decimal precision.
+    expect(previewMaxFeeLyth(1n, 21_000n)).toBe("0.000000000000021");
   });
 
   it("returns 0 when fee × limit = 0", () => {

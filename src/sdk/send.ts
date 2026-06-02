@@ -26,6 +26,7 @@
 
 import {
   LYTHOSHI_PER_LYTH,
+  NATIVE_LYTH_DECIMALS,
   TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT,
   parseLythToLythoshi,
   resolveExecutionFee,
@@ -195,7 +196,10 @@ export function previewMaxFeeLyth(
   const whole = lythoshi / LYTHOSHI_PER_LYTH;
   const fraction = lythoshi % LYTHOSHI_PER_LYTH;
   if (fraction === 0n) return whole.toString();
-  const fracStr = fraction.toString().padStart(8, "0").replace(/0+$/, "");
+  const fracStr = fraction
+    .toString()
+    .padStart(NATIVE_LYTH_DECIMALS, "0")
+    .replace(/0+$/, "");
   return fracStr.length === 0 ? whole.toString() : `${whole}.${fracStr}`;
 }
 

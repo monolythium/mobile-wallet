@@ -20,6 +20,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   addressToTypedBech32,
   DIVERSITY_SCORE_MAX,
+  LYTHOSHI_PER_LYTH,
   type ClusterDirectoryEntryResponse,
   type ClusterDiversityView,
   type DelegationsResponse,
@@ -184,7 +185,7 @@ export function Stake({ selfAddress, openOperation }: Props) {
 
   const openDelegate = (clusterId: number, weightBps: number, principalLyth: bigint) => {
     const weightLabel = `${(weightBps / 100).toFixed(2)}%`;
-    const principalLythoshi = principalLyth * 100_000_000n; // 1 LYTH = 1e8 lythoshi
+    const principalLythoshi = principalLyth * LYTHOSHI_PER_LYTH; // native LYTH precision
     openOperation({
       kind: "stake",
       title: `Delegate ${principalLyth} LYTH to cluster ${clusterId}`,
