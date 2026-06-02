@@ -91,8 +91,8 @@ function fullArgs(): SpendingPolicyArgs {
   return {
     subAccount: SUB,
     principal: PRINCIPAL,
-    perTxCapLythoshi: 100_000_000n, // 1 LYTH
-    dailyCapLythoshi: 500_000_000n, // 5 LYTH
+    perTxCapLythoshi: 100_000_000n, // raw lythoshi cap (ABI-encoded, echo-validated)
+    dailyCapLythoshi: 500_000_000n,
     weeklyCapLythoshi: 2_000_000_000n,
     monthlyCapLythoshi: 8_000_000_000n,
     allowRoot: emptyMerkleRoot(),

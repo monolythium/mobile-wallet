@@ -192,7 +192,7 @@ export interface ChainSnapshot {
   endpoint: string;
   chainId: bigint;
   blockHeight: bigint | null;
-  /** Decimal LYTH as a JS number; for display only (1 LYTH = 1e8 lythoshi). */
+  /** Decimal LYTH as a JS number; for display only (scaled by LYTHOSHI_PER_LYTH). */
   balanceLyth: number;
   /** Raw lythoshi as a `0x`-quantity string straight off the wire. */
   balanceLythoshiHex: string;

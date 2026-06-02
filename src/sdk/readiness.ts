@@ -1,8 +1,10 @@
 import * as monolythiumCoreSdk from "@monolythium/core-sdk";
 import {
+  LYTHOSHI_PER_LYTH,
   ML_DSA_65_PUBLIC_KEY_LEN,
   MONOLYTHIUM_TESTNET_CHAIN_ID,
   MONOLYTHIUM_TESTNET_NETWORK_NAME,
+  NATIVE_LYTH_DECIMALS,
   verifyNoEvmArchiveProofSignatures,
   verifyNoEvmFinalityEvidenceThreshold,
   type NoEvmArchiveProof as SdkNoEvmArchiveProof,
@@ -44,8 +46,6 @@ interface NativeCapabilitiesResponse {
   nativeModuleForwarders?: Record<string, NativeModuleForwarderDescriptor[] | undefined>;
 }
 
-const NATIVE_LYTH_DECIMALS = 8;
-const LYTHOSHI_PER_LYTH = 100_000_000n;
 const MRV_PROFILE_MONO_RV32IM_V1 = "mono_rv32im_v1";
 const MRV_TX_EXTENSION_KIND = 0x30;
 const NO_EVM_RECEIPT_PROOF_SCHEMA = "mono.no_evm_receipt_proof.v1";
