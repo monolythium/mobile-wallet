@@ -28,6 +28,10 @@ vi.mock("@monolythium/core-sdk", async (importOriginal) => {
 const TRUST_ENV_KEYS = [
   "VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS",
   "VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD",
+  "VITE_MONO_ROUND_FINALITY_CHAIN_ID",
+  "VITE_MONO_ROUND_FINALITY_CLUSTER_PUBLIC_KEY",
+  "VITE_MONO_ROUND_FINALITY_COMMITTEE_SIZE",
+  "VITE_MONO_ROUND_FINALITY_THRESHOLD",
   "VITE_MONO_BLS_FINALITY_CHAIN_ID",
   "VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY",
   "VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE",
@@ -65,7 +69,7 @@ const COVERING_SNAPSHOT = {
 
 const FINALITY_EVIDENCE = {
   schema: "mono.no_evm_receipt_finality.v1",
-  source: "blsRoundCertificate",
+  source: "roundCertificate",
   round: 77,
   certificate: {
     round: 77,
@@ -78,7 +82,7 @@ const FINALITY_EVIDENCE = {
 
 const VERIFIED_FINALITY_EVIDENCE = {
   schema: "mono.no_evm_receipt_finality.v1",
-  source: "blsRoundCertificate",
+  source: "roundCertificate",
   round: 58,
   certificate: {
     round: 58,
@@ -351,8 +355,8 @@ describe("wallet readiness", () => {
     expect(readiness.state).toBe("ready");
     expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
       state: "ready",
-      value: "compact + BLS/archive verified",
-      detail: expect.stringContaining("wallet-verified BLS threshold 1/1"),
+      value: "compact + round/archive verified",
+      detail: expect.stringContaining("wallet-verified round threshold 1/1"),
     });
     expect(readiness.items.find((item) => item.key === "receipt-proof")?.detail)
       .toContain("wallet-verified ML-DSA archive threshold 1/1");
@@ -417,7 +421,7 @@ describe("wallet readiness", () => {
 
     expect(finalityExpired.state).toBe("blocked");
     expect(finalityExpired.items.find((item) => item.key === "receipt-proof")?.detail)
-      .toContain("registry BLS finality policy is not valid at round 58");
+      .toContain("registry round-finality policy is not valid at round 58");
 
     sdkRegistryMock.policy = {
       ...registryPolicyForProof(signed),
@@ -450,17 +454,17 @@ describe("wallet readiness", () => {
 
     expect(explicit.state).toBe("ready");
     expect(explicit.items.find((item) => item.key === "receipt-proof")?.value)
-      .toBe("compact + BLS/archive verified");
+      .toBe("compact + round/archive verified");
 
     vi.stubEnv("VITE_MONO_ARCHIVE_TRUSTED_PUBKEYS", bytesToHex(signed.signer.publicKey()));
     vi.stubEnv("VITE_MONO_ARCHIVE_SIGNATURE_THRESHOLD", "1");
-    vi.stubEnv("VITE_MONO_BLS_FINALITY_CHAIN_ID", VERIFIED_FINALITY_TRUST.chainId.toString());
-    vi.stubEnv("VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY", VERIFIED_FINALITY_TRUST.clusterPublicKey);
+    vi.stubEnv("VITE_MONO_ROUND_FINALITY_CHAIN_ID", VERIFIED_FINALITY_TRUST.chainId.toString());
+    vi.stubEnv("VITE_MONO_ROUND_FINALITY_CLUSTER_PUBLIC_KEY", VERIFIED_FINALITY_TRUST.clusterPublicKey);
     vi.stubEnv(
-      "VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE",
+      "VITE_MONO_ROUND_FINALITY_COMMITTEE_SIZE",
       VERIFIED_FINALITY_TRUST.committeeSize.toString(),
     );
-    vi.stubEnv("VITE_MONO_BLS_FINALITY_THRESHOLD", VERIFIED_FINALITY_TRUST.threshold.toString());
+    vi.stubEnv("VITE_MONO_ROUND_FINALITY_THRESHOLD", VERIFIED_FINALITY_TRUST.threshold.toString());
 
     const fromEnv = buildWalletReadiness(STATUS, CAPABILITIES, null, {
       archiveProof: signed.proof,
@@ -469,7 +473,7 @@ describe("wallet readiness", () => {
 
     expect(fromEnv.state).toBe("ready");
     expect(fromEnv.items.find((item) => item.key === "receipt-proof")?.value)
-      .toBe("compact + BLS/archive verified");
+      .toBe("compact + round/archive verified");
   });
 
   it("wallet-verifies exact-height archive signatures when trusted signer config is supplied", () => {
@@ -561,16 +565,20 @@ describe("wallet readiness", () => {
     );
   });
 
-  it("accepts nullable or BLS round certificate finality evidence without fabricating wallet verification", () => {
+  it("accepts nullable or round-certificate finality evidence without fabricating wallet verification", () => {
     expect(acceptsNoEvmFinalityEvidence(null)).toBe(true);
     expect(acceptsNoEvmFinalityEvidence(FINALITY_EVIDENCE)).toBe(true);
+    expect(acceptsNoEvmFinalityEvidence({
+      ...FINALITY_EVIDENCE,
+      source: "blsRoundCertificate",
+    })).toBe(true);
     expect(describeNoEvmFinalityEvidence(null)).toBe(
-      "BLS round certificate absent; no live finality evidence",
+      "round certificate absent; no live finality evidence",
     );
     expect(describeNoEvmFinalityEvidence(FINALITY_EVIDENCE)).toBe(
-      "BLS round certificate mono.no_evm_receipt_finality.v1; " +
-        "source blsRoundCertificate; round 77; 2 signers; " +
-        "certificate parsed; not wallet-verified (trusted BLS finality config absent)",
+      "round certificate mono.no_evm_receipt_finality.v1; " +
+        "source roundCertificate; round 77; 2 signers; " +
+        "certificate parsed; not wallet-verified (trusted round-finality config absent)",
     );
     expect(acceptsNoEvmFinalityEvidence({
       ...FINALITY_EVIDENCE,
@@ -588,7 +596,7 @@ describe("wallet readiness", () => {
     })).toBe(false);
   });
 
-  it("wallet-verifies BLS finality evidence when trusted threshold config is supplied", () => {
+  it("wallet-verifies round-finality evidence when trusted threshold config is supplied", () => {
     expect(acceptsNoEvmFinalityEvidence(
       VERIFIED_FINALITY_EVIDENCE,
       VERIFIED_FINALITY_TRUST,
@@ -596,7 +604,7 @@ describe("wallet readiness", () => {
     expect(describeNoEvmFinalityEvidence(
       VERIFIED_FINALITY_EVIDENCE,
       VERIFIED_FINALITY_TRUST,
-    )).toContain("wallet-verified BLS threshold 1/1");
+    )).toContain("wallet-verified round threshold 1/1");
 
     const readiness = buildWalletReadiness(STATUS, CAPABILITIES, null, {
       finalityEvidence: VERIFIED_FINALITY_EVIDENCE,
@@ -606,12 +614,12 @@ describe("wallet readiness", () => {
     expect(readiness.state).toBe("ready");
     expect(readiness.items.find((item) => item.key === "receipt-proof")).toMatchObject({
       state: "ready",
-      value: "compact + BLS verified",
-      detail: expect.stringContaining("wallet-verified BLS threshold 1/1"),
+      value: "compact + round verified",
+      detail: expect.stringContaining("wallet-verified round threshold 1/1"),
     });
   });
 
-  it("fails closed when configured BLS finality trust does not match the evidence", () => {
+  it("fails closed when configured round-finality trust does not match the evidence", () => {
     const wrongChainTrust = {
       ...VERIFIED_FINALITY_TRUST,
       chainId: 69_421,
@@ -639,25 +647,25 @@ describe("wallet readiness", () => {
     });
   });
 
-  it("fails closed for incomplete or malformed configured BLS finality trust", () => {
+  it("fails closed for incomplete or malformed configured round-finality trust", () => {
     expect(noEvmFinalityTrustConfigFromEnv({})).toMatchObject({
       state: "unconfigured",
     });
 
     const incomplete = noEvmFinalityTrustConfigFromEnv({
-      VITE_MONO_BLS_FINALITY_CHAIN_ID: "69420",
+      VITE_MONO_ROUND_FINALITY_CHAIN_ID: "69420",
     });
     expect(incomplete).toMatchObject({ state: "blocked" });
     expect(acceptsNoEvmFinalityEvidence(FINALITY_EVIDENCE, incomplete)).toBe(false);
     expect(describeNoEvmFinalityEvidence(FINALITY_EVIDENCE, incomplete)).toContain(
-      "wallet verification blocked: incomplete BLS finality trust config",
+      "wallet verification blocked: incomplete round-finality trust config",
     );
 
     const malformed = noEvmFinalityTrustConfigFromEnv({
-      VITE_MONO_BLS_FINALITY_CHAIN_ID: "69420",
-      VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY: "0x12",
-      VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE: "7",
-      VITE_MONO_BLS_FINALITY_THRESHOLD: "1",
+      VITE_MONO_ROUND_FINALITY_CHAIN_ID: "69420",
+      VITE_MONO_ROUND_FINALITY_CLUSTER_PUBLIC_KEY: "0x12",
+      VITE_MONO_ROUND_FINALITY_COMMITTEE_SIZE: "7",
+      VITE_MONO_ROUND_FINALITY_THRESHOLD: "1",
     });
     expect(malformed).toMatchObject({ state: "blocked" });
 

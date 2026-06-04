@@ -54,7 +54,8 @@ const NO_EVM_COMPACT_INCLUSION_PROOF_SCHEMA =
 const NO_EVM_ARCHIVE_PROOF_SCHEMA = "mono.no_evm_receipt_archive_binding.v1";
 const NO_EVM_ARCHIVE_PROOF_SOURCE = "indexerReceiptArchiveContentDigest";
 const NO_EVM_FINALITY_EVIDENCE_SCHEMA = "mono.no_evm_receipt_finality.v1";
-const NO_EVM_FINALITY_EVIDENCE_SOURCE = "blsRoundCertificate";
+const NO_EVM_FINALITY_EVIDENCE_SOURCE = "roundCertificate";
+const NO_EVM_LEGACY_FINALITY_EVIDENCE_SOURCE = "blsRoundCertificate";
 const NO_EVM_RECEIPT_CODEC = "bincode(protocore_evm::Receipt)";
 const NO_EVM_RECEIPT_ROOT_DOMAIN = "monolythium/v4.1/receipts_root_empty/1";
 const MIN_NATIVE_FEE_LYTHOSHI = LYTHOSHI_PER_LYTH / 10_000n;
@@ -206,7 +207,7 @@ const SUPPORTED_INDEXER_ARCHIVE_PROOF: NoEvmArchiveProofMaterial = {
   signatures: [],
 };
 
-const SUPPORTED_BLS_ROUND_CERT_FINALITY_EVIDENCE: NoEvmFinalityEvidence = {
+const SUPPORTED_ROUND_CERT_FINALITY_EVIDENCE: NoEvmFinalityEvidence = {
   schema: NO_EVM_FINALITY_EVIDENCE_SCHEMA,
   source: NO_EVM_FINALITY_EVIDENCE_SOURCE,
   round: 42,
@@ -282,26 +283,38 @@ export function noEvmFinalityTrustConfigFromEnv(
   env: Record<string, unknown> = import.meta.env,
 ): NoEvmFinalityTrustConfigResolution {
   const raw = {
-    chainId: env.VITE_MONO_BLS_FINALITY_CHAIN_ID,
-    clusterPublicKey: env.VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY,
-    committeeSize: env.VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE,
-    threshold: env.VITE_MONO_BLS_FINALITY_THRESHOLD,
+    chainId: readFirstEnvString(env, [
+      "VITE_MONO_ROUND_FINALITY_CHAIN_ID",
+      "VITE_MONO_BLS_FINALITY_CHAIN_ID",
+    ]),
+    clusterPublicKey: readFirstEnvString(env, [
+      "VITE_MONO_ROUND_FINALITY_CLUSTER_PUBLIC_KEY",
+      "VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY",
+    ]),
+    committeeSize: readFirstEnvString(env, [
+      "VITE_MONO_ROUND_FINALITY_COMMITTEE_SIZE",
+      "VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE",
+    ]),
+    threshold: readFirstEnvString(env, [
+      "VITE_MONO_ROUND_FINALITY_THRESHOLD",
+      "VITE_MONO_BLS_FINALITY_THRESHOLD",
+    ]),
   };
   const values = Object.values(raw).map(readEnvString);
   const configuredCount = values.filter((value) => value !== undefined).length;
   if (configuredCount === 0) {
     return {
       state: "unconfigured",
-      detail: "trusted BLS finality config absent",
+      detail: "trusted round-finality config absent",
     };
   }
   if (configuredCount !== values.length) {
     return {
       state: "blocked",
       detail:
-        "incomplete BLS finality trust config; set VITE_MONO_BLS_FINALITY_CHAIN_ID, " +
-        "VITE_MONO_BLS_FINALITY_CLUSTER_PUBLIC_KEY, VITE_MONO_BLS_FINALITY_COMMITTEE_SIZE, " +
-        "and VITE_MONO_BLS_FINALITY_THRESHOLD",
+        "incomplete round-finality trust config; set VITE_MONO_ROUND_FINALITY_CHAIN_ID, " +
+        "VITE_MONO_ROUND_FINALITY_CLUSTER_PUBLIC_KEY, VITE_MONO_ROUND_FINALITY_COMMITTEE_SIZE, " +
+        "and VITE_MONO_ROUND_FINALITY_THRESHOLD",
     };
   }
   return resolveNoEvmFinalityTrustConfig({
@@ -433,14 +446,14 @@ function noEvmFinalityTrustConfigFromRegistry(
   if (finality == null) {
     return {
       state: "unconfigured",
-      detail: "registry BLS finality policy absent",
+      detail: "registry round-finality policy absent",
     };
   }
   if (finality.mode === "multisig") {
     return {
       state: "blocked",
       detail:
-        "registry BLS finality policy uses multisig mode, but mobile wallet readiness " +
+        "registry round-finality policy uses multisig mode, but mobile wallet readiness " +
         "only supports cluster finality",
     };
   }
@@ -448,7 +461,7 @@ function noEvmFinalityTrustConfigFromRegistry(
   if (chainId == null) {
     return {
       state: "blocked",
-      detail: "registry BLS finality policy is missing chainId",
+      detail: "registry round-finality policy is missing chainId",
     };
   }
   const resolved = resolveNoEvmFinalityTrustConfig({
@@ -460,12 +473,12 @@ function noEvmFinalityTrustConfigFromRegistry(
   if (resolved.state !== "configured") return resolved;
   const validFromRound = parseOptionalRegistryBound(
     finality.validFromRound,
-    "registry BLS finality validFromRound",
+    "registry round-finality validFromRound",
   );
   if (validFromRound.state === "blocked") return validFromRound;
   const validToRound = parseOptionalRegistryBound(
     finality.validToRound,
-    "registry BLS finality validToRound",
+    "registry round-finality validToRound",
   );
   if (validToRound.state === "blocked") return validToRound;
   if (
@@ -475,7 +488,7 @@ function noEvmFinalityTrustConfigFromRegistry(
   ) {
     return {
       state: "blocked",
-      detail: "registry BLS finality validFromRound exceeds validToRound",
+      detail: "registry round-finality validFromRound exceeds validToRound",
     };
   }
   if (validFromRound.value !== undefined) {
@@ -493,14 +506,14 @@ export function resolveNoEvmFinalityTrustConfig(
   if (finalityTrust == null) {
     return {
       state: "unconfigured",
-      detail: "trusted BLS finality config absent",
+      detail: "trusted round-finality config absent",
     };
   }
   if (isFinalityTrustConfigResolution(finalityTrust)) return finalityTrust;
 
   const chainId = parseTrustedChainId(finalityTrust.chainId, "chainId");
   if (chainId.state === "blocked") return chainId;
-  const clusterPublicKey = parseBlsPublicKey(
+  const clusterPublicKey = parseRoundFinalityPublicKey(
     finalityTrust.clusterPublicKey,
     "clusterPublicKey",
   );
@@ -591,7 +604,7 @@ function nativeFeeItem(): ReadinessItem {
 
 function receiptProofItem(options: WalletReadinessOptions): ReadinessItem {
   const finalityEvidence = options.finalityEvidence === undefined
-    ? SUPPORTED_BLS_ROUND_CERT_FINALITY_EVIDENCE
+    ? SUPPORTED_ROUND_CERT_FINALITY_EVIDENCE
     : options.finalityEvidence;
   const finality = assessNoEvmFinalityEvidence(
     finalityEvidence,
@@ -784,11 +797,11 @@ function assessNoEvmFinalityEvidence(
       accepted: trust.state !== "blocked",
       walletVerified: false,
       detail: trust.state === "blocked"
-        ? `BLS round certificate absent; wallet verification blocked: ${trust.detail}`
-        : "BLS round certificate absent; no live finality evidence",
+        ? `round certificate absent; wallet verification blocked: ${trust.detail}`
+        : "round certificate absent; no live finality evidence",
     };
   }
-  if (!isSupportedBlsRoundCertificateFinalityEvidence(finalityEvidence)) {
+  if (!isSupportedRoundCertificateFinalityEvidence(finalityEvidence)) {
     return {
       accepted: false,
       walletVerified: false,
@@ -799,7 +812,7 @@ function assessNoEvmFinalityEvidence(
   const { round, certificate } = finalityEvidence;
   const signerLabel = certificate.signerCount === 1 ? "signer" : "signers";
   const parsed = [
-    `BLS round certificate ${NO_EVM_FINALITY_EVIDENCE_SCHEMA}`,
+    `round certificate ${NO_EVM_FINALITY_EVIDENCE_SCHEMA}`,
     `source ${NO_EVM_FINALITY_EVIDENCE_SOURCE}`,
     `round ${round.toString()}`,
     `${certificate.signerCount.toString()} ${signerLabel}`,
@@ -826,13 +839,16 @@ function assessNoEvmFinalityEvidence(
     return {
       accepted: false,
       walletVerified: false,
-      detail: `${parsed}; wallet verification blocked: registry BLS finality policy is not valid at round ${round.toString()}`,
+      detail: `${parsed}; wallet verification blocked: registry round-finality policy is not valid at round ${round.toString()}`,
     };
   }
 
   let verification: NoEvmBlsFinalityVerification;
   try {
-    verification = verifyNoEvmFinalityEvidenceThreshold(finalityEvidence, trust.config);
+    verification = verifyNoEvmFinalityEvidenceThreshold(
+      finalityEvidenceForCurrentSdk(finalityEvidence),
+      trust.config,
+    );
   } catch (cause) {
     return {
       accepted: false,
@@ -846,7 +862,7 @@ function assessNoEvmFinalityEvidence(
       accepted: true,
       walletVerified: true,
       detail:
-        `${parsed}; wallet-verified BLS threshold ` +
+        `${parsed}; wallet-verified round threshold ` +
         `${verification.acceptedSignatureCount.toString()}/${verification.requiredSignatureCount.toString()}`,
     };
   }
@@ -854,7 +870,7 @@ function assessNoEvmFinalityEvidence(
   return {
     accepted: false,
     walletVerified: false,
-    detail: `${parsed}; wallet verification mismatch: ${describeBlsFinalityMismatch(verification)}`,
+    detail: `${parsed}; wallet verification mismatch: ${describeRoundFinalityMismatch(verification)}`,
   };
 }
 
@@ -909,11 +925,13 @@ function isSupportedArchiveCoveringSnapshot(
   );
 }
 
-function isSupportedBlsRoundCertificateFinalityEvidence(
+function isSupportedRoundCertificateFinalityEvidence(
   finalityEvidence: unknown,
 ): finalityEvidence is SdkNoEvmFinalityEvidence & {
   schema: typeof NO_EVM_FINALITY_EVIDENCE_SCHEMA;
-  source: typeof NO_EVM_FINALITY_EVIDENCE_SOURCE;
+  source:
+    | typeof NO_EVM_FINALITY_EVIDENCE_SOURCE
+    | typeof NO_EVM_LEGACY_FINALITY_EVIDENCE_SOURCE;
   round: number;
   certificate: {
     round: number;
@@ -930,7 +948,8 @@ function isSupportedBlsRoundCertificateFinalityEvidence(
   const { certificate } = finalityEvidence;
   return (
     finalityEvidence.schema === NO_EVM_FINALITY_EVIDENCE_SCHEMA &&
-    finalityEvidence.source === NO_EVM_FINALITY_EVIDENCE_SOURCE &&
+    (finalityEvidence.source === NO_EVM_FINALITY_EVIDENCE_SOURCE ||
+      finalityEvidence.source === NO_EVM_LEGACY_FINALITY_EVIDENCE_SOURCE) &&
     isNonNegativeSafeInteger(finalityEvidence.round) &&
     certificate.round === finalityEvidence.round &&
     isHexBytesOfLength(certificate.signature, 96) &&
@@ -940,6 +959,19 @@ function isSupportedBlsRoundCertificateFinalityEvidence(
     isPositiveSafeInteger(certificate.signerCount) &&
     certificate.signerCount === certificate.signerIndices.length
   );
+}
+
+function finalityEvidenceForCurrentSdk(
+  finalityEvidence: SdkNoEvmFinalityEvidence & {
+    source:
+      | typeof NO_EVM_FINALITY_EVIDENCE_SOURCE
+      | typeof NO_EVM_LEGACY_FINALITY_EVIDENCE_SOURCE;
+  },
+): SdkNoEvmFinalityEvidence {
+  return {
+    ...finalityEvidence,
+    source: NO_EVM_LEGACY_FINALITY_EVIDENCE_SOURCE,
+  };
 }
 
 function withDefaultTrustConfig(
@@ -1017,6 +1049,17 @@ function readEnvString(value: unknown): string | undefined {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+function readFirstEnvString(
+  env: Record<string, unknown>,
+  names: readonly string[],
+): string | undefined {
+  for (const name of names) {
+    const value = readEnvString(env[name]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 function parseTrustedChainId(
   value: unknown,
   field: string,
@@ -1074,7 +1117,7 @@ function parseIntegerLike(
   return { state: "blocked", detail: `${field} must be an integer` };
 }
 
-function parseBlsPublicKey(
+function parseRoundFinalityPublicKey(
   value: unknown,
   field: string,
 ): { state: "ok"; value: Uint8Array } | { state: "blocked"; detail: string } {
@@ -1082,7 +1125,7 @@ function parseBlsPublicKey(
     if (!isHexBytesOfLength(value, 48)) {
       return {
         state: "blocked",
-        detail: `${field} must be a 0x-prefixed 48-byte BLS public key`,
+        detail: `${field} must be a 0x-prefixed 48-byte round-finality public key`,
       };
     }
     return { state: "ok", value: hexToBytes(value) };
@@ -1101,7 +1144,7 @@ function parseBlsPublicKey(
   }
   return {
     state: "blocked",
-    detail: `${field} must be a 0x-prefixed 48-byte BLS public key`,
+    detail: `${field} must be a 0x-prefixed 48-byte round-finality public key`,
   };
 }
 
@@ -1174,9 +1217,9 @@ function receiptProofValue(
 ): string {
   if (!ready) return "not verified";
   if (archiveWalletVerified && finalityWalletVerified) {
-    return "compact + BLS/archive verified";
+    return "compact + round/archive verified";
   }
-  if (finalityWalletVerified) return "compact + BLS verified";
+  if (finalityWalletVerified) return "compact + round verified";
   if (archiveWalletVerified) return "compact + archive signatures verified";
   return "compact + archive digest";
 }
@@ -1247,7 +1290,7 @@ function describeArchiveSignatureMismatch(
   return Array.from(reasons).join(", ") || "archive signatures not verified";
 }
 
-function describeBlsFinalityMismatch(
+function describeRoundFinalityMismatch(
   verification: NoEvmBlsFinalityVerification,
 ): string {
   const reasons: string[] = [];
@@ -1265,7 +1308,7 @@ function describeBlsFinalityMismatch(
 }
 
 function formatErrorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : "BLS finality verification failed";
+  return cause instanceof Error ? cause.message : "round-finality verification failed";
 }
 
 function formatArchiveVerificationErrorMessage(cause: unknown): string {
