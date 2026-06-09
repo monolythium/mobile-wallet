@@ -192,7 +192,7 @@ describe("sendLyth — DEFAULT path is PLAINTEXT", () => {
     expect(wire.startsWith("0x")).toBe(true);
   });
 
-  it("uses the SDK sane transfer limit (100k), not the old 21k floor", async () => {
+  it("uses the SDK sane transfer limit (500k), not the old 21k floor", async () => {
     const observed: CapturedCall[] = [];
     const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
     const amountLyth = "2";
@@ -208,7 +208,7 @@ describe("sendLyth — DEFAULT path is PLAINTEXT", () => {
       ),
     ).resolves.toMatchObject({ txHash: hash });
 
-    expect(TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT).toBe(100_000n);
+    expect(TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT).toBe(500_000n);
   });
 });
 

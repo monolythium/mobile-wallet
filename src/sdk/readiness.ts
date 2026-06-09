@@ -970,7 +970,7 @@ function finalityEvidenceForCurrentSdk(
 ): SdkNoEvmFinalityEvidence {
   return {
     ...finalityEvidence,
-    source: NO_EVM_LEGACY_FINALITY_EVIDENCE_SOURCE,
+    source: NO_EVM_FINALITY_EVIDENCE_SOURCE,
   };
 }
 

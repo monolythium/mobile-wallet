@@ -50,7 +50,7 @@ export interface SendLythArgs {
   amountLyth: string;
   /**
    * Execution-unit limit. Defaults to the SDK's sane transfer default
-   * (`TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT`, 100k — the ML-DSA-65-signed
+   * (`TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT`, 500k — the ML-DSA-65-signed
    * transfer cost with margin), NOT the old 21k intrinsic floor.
    */
   executionUnitLimit?: bigint;

@@ -16,7 +16,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   RpcClient,
-  TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT,
   addressToTypedBech32,
   delegationAddressHex,
   encodeDelegateCalldata,
@@ -44,9 +43,8 @@ const MOCK_CHAIN_ID = 0x10f2cn; // 69420
 const MOCK_NONCE = 0x7n;
 const MOCK_UNIT_PRICE = 2_000n;
 const MOCK_MAX_FEE = 6_000n; // 2000 quote × 3 safety multiplier
-// staking default limit (see DELEGATION_DEFAULT_EXECUTION_UNIT_LIMIT) ===
-// the SDK transfer default; pin to it so the reconstruction matches.
-const STAKING_LIMIT = TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT;
+// staking default limit (see DELEGATION_DEFAULT_EXECUTION_UNIT_LIMIT).
+const STAKING_LIMIT = 100_000n;
 
 interface CapturedCall {
   method: string;
