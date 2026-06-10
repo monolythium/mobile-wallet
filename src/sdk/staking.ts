@@ -1,23 +1,28 @@
 // Staking SDK seam — wraps `lyth_clusterDirectory`, `lyth_getDelegations`,
 // and the delegation-precompile (Law §5.4 / §7.6) calldata encoders.
 //
+// NON-CUSTODIAL ARK staking: delegation is balance-weighted and never
+// escrows tokens. `delegate(cluster, weightBps)` records a `weightBps`
+// fraction of the caller's LIVE balance; the contribution to a cluster is
+// the effective weight `floor(balance × weightBps / 10000)`. Tokens stay
+// fully liquid and spendable. The delegate tx is sent with value = 0; the
+// chain reverts (UnexpectedValue, tag 0x020e) if any native value is
+// attached. There is no redemption queue: `undelegate` is instant.
+//
 // Delegation lives at the precompile resolved by `delegationAddressHex()`
 // (0x…100A). Calldata is the SDK's canonical 4-byte selector + packed-word
 // encoding — NOT a hand-rolled flat-uint256 ABI. The signatures are:
 //
-//   delegate(uint32 clusterId, uint16 weightBps)   — caller sends LYTH as
-//                                                     msg.value to set the
-//                                                     principal stake.
-//   undelegate(uint32 clusterId)                    — cluster only; the chain
-//                                                     appends a redemption
-//                                                     ticket (no weight arg).
+//   delegate(uint32 clusterId, uint16 weightBps)   — value = 0, no escrow.
+//   undelegate(uint32 clusterId)                    — cluster only; instant
+//                                                     removal, no redemption.
 //   redelegate(uint32 src, uint32 dst, uint16 weightBps)
 //   claim()                                         — selector only.
 //
 // All encoders + the precompile address come from `@monolythium/core-sdk`
 // (delegation.ts) so the wallet never diverges from the chain ABI.
 //
-// Submission uses the SDK 0.3.11 PLAINTEXT path by default
+// Submission uses the SDK PLAINTEXT path by default
 // (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`)
 // — the working inclusion path on the optional-encryption chain. Staking
 // (delegate / undelegate / redelegate / claim) is never user-toggleable to
@@ -65,8 +70,9 @@ export interface StakingTxResult {
 }
 
 /** delegate(uint32 clusterId, uint16 weightBps) — thin wrapper over the SDK
- *  encoder. weightBps sets the wallet-weight; the principal LYTH staked is
- *  carried separately as `tx.value` (see {@link submitStakingTx}). */
+ *  encoder. NON-CUSTODIAL: `weightBps` is the fraction of the caller's live
+ *  balance to contribute; the tx is sent with value = 0 (no escrow — see
+ *  {@link submitStakingTx}). */
 export function buildDelegateCalldata(
   clusterId: number,
   weightBps: number,
@@ -75,7 +81,8 @@ export function buildDelegateCalldata(
 }
 
 /** undelegate(uint32 clusterId) — cluster only. The SDK encoder takes NO
- *  weightBps; the chain appends a redemption ticket for the delegated stake. */
+ *  weightBps; the chain INSTANTLY removes the delegation row. There is no
+ *  redemption queue or cooldown — nothing was escrowed. */
 export function buildUndelegateCalldata(clusterId: number): string {
   return encodeUndelegateCalldata(clusterId);
 }
@@ -111,24 +118,20 @@ export async function fetchDelegations(
 
 /**
  * Submit a delegation-precompile call (delegate / undelegate / redelegate
- * / claim). Drives the SDK 0.3.11 PLAINTEXT path
+ * / claim). Drives the SDK PLAINTEXT path
  * (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`,
  * with the node-echoed canonical tx hash validated), with `to` set to the
  * delegation precompile address. This is the working inclusion path on the
  * optional-encryption chain.
  *
- * The SDK `delegate(uint32,uint16)` model sets the wallet-weight via
- * calldata but expects the principal LYTH stake to be sent as `msg.value`.
- * Pass `valueLythoshi` for delegate; leave it `0n` (default) for
- * undelegate / redelegate / claim.
+ * NON-CUSTODIAL: every staking call (including delegate) is sent with
+ * value = 0. The chain reverts (UnexpectedValue, tag 0x020e) if any native
+ * value is attached to a delegate — no tokens are ever escrowed.
  */
 export interface SubmitStakingTxArgs {
   fromBech32m: string;
   data: string;
   unlockBackend: () => Promise<MlDsa65Backend>;
-  /** Principal stake (lythoshi) sent as `msg.value`. Required for delegate;
-   *  0n (default) for undelegate / redelegate / claim. */
-  valueLythoshi?: bigint;
   /** Execution-unit limit. Defaults to a sane delegation limit; the SDK fee
    *  resolver derives the per-unit price + clamps the tip. */
   executionUnitLimit?: bigint;
@@ -165,7 +168,8 @@ export async function submitStakingTx(
     maxFeePerGas: bigintToHex(fee.maxFeePerGas),
     maxPriorityFeePerGas: bigintToHex(fee.maxPriorityFeePerGas),
     to: DELEGATION_PRECOMPILE,
-    value: bigintToHex(args.valueLythoshi ?? 0n),
+    // NON-CUSTODIAL: delegation never carries native value.
+    value: bigintToHex(0n),
     input: args.data,
   };
 

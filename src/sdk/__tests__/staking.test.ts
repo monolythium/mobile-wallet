@@ -51,7 +51,8 @@ interface CapturedCall {
   params: unknown[];
 }
 
-function expectedTxFields(data: string, valueLythoshi: bigint): NativeEvmTxFields {
+// NON-CUSTODIAL: delegation is always submitted with value = 0.
+function expectedTxFields(data: string): NativeEvmTxFields {
   const toHexNum = (n: bigint) => "0x" + n.toString(16);
   return {
     chainId: toHexNum(MOCK_CHAIN_ID),
@@ -60,19 +61,15 @@ function expectedTxFields(data: string, valueLythoshi: bigint): NativeEvmTxField
     maxFeePerGas: toHexNum(MOCK_MAX_FEE),
     maxPriorityFeePerGas: toHexNum(MOCK_MAX_FEE),
     to: delegationAddressHex(),
-    value: toHexNum(valueLythoshi),
+    value: toHexNum(0n),
     input: data,
   };
 }
 
-function expectedTxHash(
-  backend: MlDsa65Backend,
-  data: string,
-  valueLythoshi: bigint,
-): string {
+function expectedTxHash(backend: MlDsa65Backend, data: string): string {
   return buildPlaintextSubmission({
     backend,
-    tx: expectedTxFields(data, valueLythoshi),
+    tx: expectedTxFields(data),
   }).innerTxHashHex;
 }
 
@@ -146,13 +143,12 @@ describe("submitStakingTx — PLAINTEXT submit", () => {
     const observed: CapturedCall[] = [];
     const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
     const data = buildDelegateCalldata(5, 1000);
-    const hash = expectedTxHash(backend, data, 0n);
+    const hash = expectedTxHash(backend, data);
     installProvider(observed, hash);
 
     const result = await submitStakingTx({
       fromBech32m: SELF_TYPED,
       data,
-      valueLythoshi: 0n,
       unlockBackend: async () => backend,
     });
 
@@ -176,20 +172,18 @@ describe("submitStakingTx — PLAINTEXT submit", () => {
     expect(typedBech32ToAddress(SELF_TYPED, "user").hex).toBe(SELF_HEX);
   });
 
-  it("carries the principal as msg.value on a delegate", async () => {
+  it("sends a delegate with value = 0 (non-custodial — no escrow)", async () => {
     const observed: CapturedCall[] = [];
     const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
     const data = buildDelegateCalldata(3, 2500);
-    const principal = 100_000_000_000n; // arbitrary lythoshi principal (echo-validated)
-    const hash = expectedTxHash(backend, data, principal);
+    // expectedTxHash pins value = 0; if the wallet attached any native value
+    // the reconstructed hash would not match and SDK echo-validation throws.
+    const hash = expectedTxHash(backend, data);
     installProvider(observed, hash);
 
-    // If the wallet dropped or mangled msg.value the reconstructed hash
-    // would not match and the SDK echo-validation would throw.
     const result = await submitStakingTx({
       fromBech32m: SELF_TYPED,
       data,
-      valueLythoshi: principal,
       unlockBackend: async () => backend,
     });
     expect(result.txHash).toBe(hash);

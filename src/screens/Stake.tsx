@@ -20,7 +20,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
   addressToTypedBech32,
   DIVERSITY_SCORE_MAX,
-  LYTHOSHI_PER_LYTH,
   type ClusterDirectoryEntryResponse,
   type ClusterDiversityView,
   type DelegationsResponse,
@@ -57,7 +56,6 @@ type DelegateFormState =
       kind: "open";
       clusterId: number;
       weightBpsDraft: string;
-      principalLythDraft: string;
       error: string | null;
     };
 
@@ -183,41 +181,35 @@ export function Stake({ selfAddress, openOperation }: Props) {
     }
   };
 
-  const openDelegate = (clusterId: number, weightBps: number, principalLyth: bigint) => {
+  const openDelegate = (clusterId: number, weightBps: number) => {
     const weightLabel = `${(weightBps / 100).toFixed(2)}%`;
-    const principalLythoshi = principalLyth * LYTHOSHI_PER_LYTH; // native LYTH precision
     openOperation({
       kind: "stake",
-      title: `Delegate ${principalLyth} LYTH to cluster ${clusterId}`,
-      summary: `Stake ${principalLyth} LYTH principal at ${weightLabel} of your wallet weight to cluster ${clusterId}. The chain confirms in ~1 second.`,
+      title: `Delegate ${weightLabel} to cluster ${clusterId}`,
+      summary: `Weight ${weightLabel} of your balance to cluster ${clusterId}. Non-custodial — your LYTH stays in your wallet and remains spendable. The chain confirms in ~1 second.`,
       details: [
         { k: "From", v: selfBech32m, mono: true },
         { k: "Cluster", v: String(clusterId), mono: true },
-        { k: "Weight", v: weightLabel, mono: true },
-        {
-          k: "Principal",
-          v: `${principalLyth} LYTH (${principalLythoshi.toString()} lythoshi)`,
-          mono: true,
-        },
+        { k: "Weight", v: `${weightLabel} of balance`, mono: true },
+        { k: "Value", v: "0 LYTH (non-custodial)", mono: true },
         { k: "Precompile", v: "0x…100a", mono: true },
       ],
-      confirmLabel: "Sign and stake",
-      // Notifications-center metadata (experimental-v5). The principal LYTH
-      // staked rides as msg.value; the amount shown is that principal.
-      // Counterparty is the delegation precompile, never a contact name.
+      confirmLabel: "Sign and delegate",
+      // Notifications-center metadata (experimental-v5). Non-custodial — no
+      // value moves; the counterparty is the delegation precompile, never a
+      // contact name.
       notify: {
         kind: "delegate",
-        amountDecimal: principalLyth.toString(),
+        amountDecimal: "0",
         counterparty: DELEGATION_PRECOMPILE.toLowerCase(),
       },
       execute: async () => {
-        // The SDK delegate(uint32,uint16) model sets the wallet-weight via
-        // calldata; the principal LYTH staked rides as msg.value.
+        // Non-custodial delegate(uint32,uint16): weightBps only, value = 0.
+        // Effective weight = balance × weightBps; nothing is escrowed.
         const calldata = buildDelegateCalldata(clusterId, weightBps);
         const result = await submitStakingTx({
           fromBech32m: selfBech32m,
           data: calldata,
-          valueLythoshi: principalLythoshi,
           unlockBackend: makeBiometricBackendFactory({
             unlock: unlockViaBiometric,
           }),
@@ -267,12 +259,7 @@ export function Stake({ selfAddress, openOperation }: Props) {
             const result = await submitStakingTx({
               fromBech32m: selfBech32m,
               data: buildDelegateCalldata(a.clusterId, a.weightBps),
-              // Autovote (experimental, default-off) plans carry only weight,
-              // not a per-allocation principal split — principal escrow for the
-              // multi-delegate path is a follow-up (the planner must emit a
-              // per-cluster principal first). The single-delegate path above
-              // escrows real principal.
-              valueLythoshi: 0n,
+              // Non-custodial: each delegate carries weight only (value = 0).
               unlockBackend: unlock,
             });
             landed.push(result.txHash);
@@ -498,7 +485,6 @@ export function Stake({ selfAddress, openOperation }: Props) {
                 kind: "open",
                 clusterId: c.clusterId,
                 weightBpsDraft: "1000",
-                principalLythDraft: "100",
                 error: null,
               })
             }
@@ -510,13 +496,6 @@ export function Stake({ selfAddress, openOperation }: Props) {
                   : prev,
               )
             }
-            onChangePrincipalDraft={(v) =>
-              setForm((prev) =>
-                prev.kind === "open" && prev.clusterId === c.clusterId
-                  ? { ...prev, principalLythDraft: v, error: null }
-                  : prev,
-              )
-            }
             onSubmit={() => {
               if (form.kind !== "open" || form.clusterId !== c.clusterId) return;
               const bps = parseInt(form.weightBpsDraft, 10);
@@ -524,18 +503,7 @@ export function Stake({ selfAddress, openOperation }: Props) {
                 setForm({ ...form, error: "Weight must be 1-10000 basis points (0.01% – 100%)." });
                 return;
               }
-              let principal: bigint;
-              try {
-                principal = BigInt(form.principalLythDraft);
-              } catch {
-                setForm({ ...form, error: "Principal must be a positive integer of whole LYTH." });
-                return;
-              }
-              if (principal <= 0n) {
-                setForm({ ...form, error: "Principal must be > 0 whole LYTH." });
-                return;
-              }
-              openDelegate(c.clusterId, bps, principal);
+              openDelegate(c.clusterId, bps);
             }}
           />
         ))}
@@ -548,11 +516,10 @@ interface ClusterRowProps {
   cluster: ClusterDirectoryEntryResponse;
   diversity: ClusterDiversityView | null;
   isFormOpen: boolean;
-  form: { weightBpsDraft: string; principalLythDraft: string; error: string | null } | null;
+  form: { weightBpsDraft: string; error: string | null } | null;
   onOpenForm: () => void;
   onCancelForm: () => void;
   onChangeWeightDraft: (v: string) => void;
-  onChangePrincipalDraft: (v: string) => void;
   onSubmit: () => void;
 }
 
@@ -564,7 +531,6 @@ function ClusterRow({
   onOpenForm,
   onCancelForm,
   onChangeWeightDraft,
-  onChangePrincipalDraft,
   onSubmit,
 }: ClusterRowProps) {
   return (
@@ -652,7 +618,7 @@ function ClusterRow({
               color: "var(--fg-400)",
             }}
           >
-            Weight (basis points · 100 = 1%)
+            Weight — % of balance (basis points · 100 = 1%)
           </label>
           <input
             type="number"
@@ -672,33 +638,11 @@ function ClusterRow({
               outline: "none",
             }}
           />
-          <label
-            style={{
-              fontSize: 11,
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-              color: "var(--fg-400)",
-            }}
-          >
-            Principal (whole LYTH)
-          </label>
-          <input
-            type="number"
-            inputMode="numeric"
-            min={1}
-            value={form.principalLythDraft}
-            onChange={(e) => onChangePrincipalDraft(e.target.value)}
-            style={{
-              padding: "8px 10px",
-              fontSize: 14,
-              fontFamily: "var(--f-mono)",
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.12)",
-              borderRadius: 8,
-              color: "var(--fg-100)",
-              outline: "none",
-            }}
-          />
+          <div className="row-help" style={{ lineHeight: 1.5 }}>
+            Non-custodial: this delegates a percent of your balance — no tokens
+            are escrowed. Your LYTH stays in your wallet and remains spendable;
+            effective weight = balance × weightBps.
+          </div>
           {form.error && (
             <div className="row-help" style={{ color: "var(--err)" }}>
               {form.error}
