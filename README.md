@@ -17,7 +17,7 @@ Functional cross-platform shell with real Rust crypto, biometric integration, an
 - **Chain target is testnet.** Monolythium mainnet has not launched. Anything you connect to here runs against the public testnet today; mainnet activation is gated on separate protocol milestones.
 - **Native iOS / Android projects under `src-tauri/gen/` are not committed.** `pnpm tauri ios init` and `pnpm tauri android init` are one-time host-side bootstrap steps that produce regenerable per-host paths and raw Xcode / Gradle artifacts (intentionally gitignored). You initialize them locally on your build host.
 - **Android is live on Google Play** — see [Install](#install) above. **iOS is not yet published** (no App Store or TestFlight build); for iOS or development, clone, init the native projects, and run a debug build to your device/simulator.
-- **SDK is consumed from npm.** `package.json` pins `@monolythium/core-sdk` to the exact published version `0.3.10` from npm ([`monolythium/mono-core-sdk`](https://github.com/monolythium/mono-core-sdk)). `pnpm install` resolves it directly — no sibling checkout required.
+- **SDK is consumed from npm.** `package.json` pins `@monolythium/core-sdk` to the exact published version `0.4.17` from npm ([`monolythium/mono-core-sdk`](https://github.com/monolythium/mono-core-sdk)). `pnpm install` resolves it directly — no sibling checkout required.
 - **Deep-link pairing is the pairing path; signing surfaces still iterating.** The deep-link router is live for incoming send / stake / pairing requests from a paired desktop or browser; per-method approval UX is converging.
 
 Watch this repo for the first non-preview tag before treating any build as production-grade.
@@ -48,7 +48,7 @@ To inspect, audit, or develop the cross-platform layer:
 - **pnpm** 10+ (`corepack enable && corepack prepare pnpm@10 --activate`)
 - **Rust** 1.77+
 
-`pnpm install` resolves all dependencies from npm — including **[`@monolythium/core-sdk`](https://github.com/monolythium/mono-core-sdk)**, pinned to the exact published version `0.3.10`. No sibling checkout is required.
+`pnpm install` resolves all dependencies from npm — including **[`@monolythium/core-sdk`](https://github.com/monolythium/mono-core-sdk)**, pinned to the exact published version `0.4.17`. No sibling checkout is required.
 
 To build for a device or simulator:
 
