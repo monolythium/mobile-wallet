@@ -40,6 +40,7 @@ import {
 import type {
   ClusterDirectoryPageResponse,
   DelegationsResponse,
+  PendingRewardsResponse,
 } from "@monolythium/core-sdk";
 import {
   typedBech32ToAddress,
@@ -114,6 +115,23 @@ export async function fetchDelegations(
   const rpc = getProvider().rpcClient;
   const hex = typedBech32ToAddress(walletBech32m, "user").hex;
   return rpc.lythGetDelegations(hex);
+}
+
+/**
+ * Read the wallet's pending (claimable) staking rewards via
+ * `lyth_pendingRewards`. `totalAmountLythoshi` is settled + unsettled
+ * claimable reward as a hex quantity; `rows` carries the per-cluster
+ * unsettled breakdown. The figure is read straight off-chain — there is no
+ * APR projection here, so the wallet never fabricates an earnings estimate.
+ * The connected node may not serve this method (older operator / disabled
+ * indexer); the caller surfaces honest absence rather than a zero.
+ */
+export async function fetchPendingRewards(
+  walletBech32m: string,
+): Promise<PendingRewardsResponse> {
+  const rpc = getProvider().rpcClient;
+  const hex = typedBech32ToAddress(walletBech32m, "user").hex;
+  return rpc.lythPendingRewards(hex);
 }
 
 /**

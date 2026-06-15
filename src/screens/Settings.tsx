@@ -6,6 +6,7 @@ import { Icon, type IconName } from "../components/Icon";
 export type SettingsRoute =
   | "menu"
   | "contacts"
+  | "privacy"
   | "reveal-phrase"
   | "reset-wallet"
   | "about"
@@ -29,6 +30,12 @@ const WALLET_ROWS: Row[] = [
     icon: "wallet",
     title: "Contacts",
     subtitle: "Saved recipient addresses",
+  },
+  {
+    route: "privacy",
+    icon: "shield",
+    title: "Privacy",
+    subtitle: "Show the Public / Private balance toggle",
   },
   {
     route: "reveal-phrase",

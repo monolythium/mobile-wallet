@@ -25,6 +25,7 @@ import { Onboarding } from "./screens/Onboarding";
 import { QrScanner } from "./screens/QrScanner";
 import { Send } from "./screens/Send";
 import { Receive } from "./screens/Receive";
+import { Tokens } from "./screens/Tokens";
 import { Activity } from "./screens/Activity";
 import { Alerts } from "./screens/Alerts";
 import { Stake } from "./screens/Stake";
@@ -32,11 +33,14 @@ import { Bridge } from "./screens/Bridge";
 import { Agents } from "./screens/Agents";
 import { Contacts } from "./screens/Contacts";
 import { Settings, type SettingsRoute } from "./screens/Settings";
+import { Privacy } from "./screens/settings/Privacy";
 import { RevealPhrase } from "./screens/settings/RevealPhrase";
 import { ResetWallet } from "./screens/settings/ResetWallet";
 import { About } from "./screens/settings/About";
 import { Experimental } from "./screens/settings/Experimental";
 import { useExperimentalV5 } from "./sdk/use-feature-flags";
+import { useDenom, usePrivacyEnabled } from "./sdk/use-privacy";
+import { setDenom as applyDenom } from "./sdk/privacy";
 import { useUnreadCount } from "./sdk/use-notifications";
 import { useReconcilePoller } from "./sdk/use-reconcile-poller";
 import { fetchChainStatus, initEndpoint, type ChainStatus } from "./sdk/client";
@@ -73,6 +77,7 @@ type MoreScreen =
   | "agents"
   | "settings"
   | "settings/contacts"
+  | "settings/privacy"
   | "settings/reveal-phrase"
   | "settings/reset-wallet"
   | "settings/about"
@@ -87,6 +92,9 @@ export default function App() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
+  // Dedicated Tokens screen, reachable from the Home "Tokens" card. Overlays
+  // the Home tab like Send/Receive; a back button returns to the wallet.
+  const [tokensOpen, setTokensOpen] = useState(false);
   // Notifications center overlay (experimental-v5). Opened from the top-bar
   // bell; sits above whatever tab is active.
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -100,6 +108,14 @@ export default function App() {
   // opt-in and OFF by default. When off, the More menu and screens below stay
   // hidden and the bell + its badge are not mounted.
   const experimentalV5 = useExperimentalV5();
+  // Public/Private display gate. `privacyEnabled` (persisted, OFF by default)
+  // governs whether the Home toggle is offered at all; `denom` is the active
+  // denomination and starts — and stays, until the user flips the toggle — at
+  // "public", so a default install renders exactly like a public-only build.
+  // The denom drives `data-denom` on the root, which re-skins the shell and
+  // flips every denom-aware screen into its private state.
+  const privacyEnabled = usePrivacyEnabled();
+  const denom = useDenom();
   // Unread notification count drives the top-bar bell badge. The hook
   // hydrates the store on mount; it reports 0 until then and whenever the
   // flag is off (no records are ever recorded in that case).
@@ -287,7 +303,7 @@ export default function App() {
   }, [toast]);
 
   if (onboarding === "checking") {
-    return <main className="mw-root" data-denom="public" />;
+    return <main className="mw-root" data-denom={denom} />;
   }
 
   if (onboarding === "needed") {
@@ -305,13 +321,13 @@ export default function App() {
   };
 
   const title = notificationsOpen ? "Notifications" : tabTitle(tab, more);
-  const showScanButton = tab !== "more" && !sendOpen && !receiveOpen;
+  const showScanButton = tab !== "more" && !sendOpen && !receiveOpen && !tokensOpen;
   // The bell lives on every screen while the experimental surface is on
   // (except when the center itself is open). Tapping it raises the center.
   const showBell = experimentalV5 && !notificationsOpen;
 
   return (
-    <main className="mw-root" data-denom="public">
+    <main className="mw-root" data-denom={denom}>
       <TopBar
         title={title}
         leading={
@@ -334,12 +350,13 @@ export default function App() {
             >
               <Icon name="back" />
             </button>
-          ) : tab === "home" && (sendOpen || receiveOpen) ? (
+          ) : tab === "home" && (sendOpen || receiveOpen || tokensOpen) ? (
             <button
               className="mw-iconbtn"
               onClick={() => {
                 setSendOpen(false);
                 setReceiveOpen(false);
+                setTokensOpen(false);
               }}
               aria-label="Back"
             >
@@ -384,14 +401,18 @@ export default function App() {
 
       {notificationsOpen && <Alerts />}
 
-      {!notificationsOpen && tab === "home" && !sendOpen && !receiveOpen && (
+      {!notificationsOpen && tab === "home" && !sendOpen && !receiveOpen && !tokensOpen && (
         <Home
           status={status}
           statusError={statusError}
           readiness={readiness}
           selfAddress={selfAddress}
+          denom={denom}
+          privacyEnabled={privacyEnabled}
+          setDenom={applyDenom}
           openSend={() => setSendOpen(true)}
           openReceive={() => setReceiveOpen(true)}
+          openTokens={() => setTokensOpen(true)}
           onScan={openScanner}
           goStake={() => setTab("stake")}
         />
@@ -409,11 +430,18 @@ export default function App() {
           onClose={() => setReceiveOpen(false)}
         />
       )}
+      {!notificationsOpen && tab === "home" && tokensOpen && (
+        <Tokens
+          selfAddress={selfAddress}
+          denom={denom}
+          onClose={() => setTokensOpen(false)}
+        />
+      )}
       {!notificationsOpen && tab === "activity" && (
-        <Activity selfAddress={selfAddress} />
+        <Activity selfAddress={selfAddress} denom={denom} />
       )}
       {!notificationsOpen && tab === "stake" && (
-        <Stake selfAddress={selfAddress} openOperation={openOperation} />
+        <Stake selfAddress={selfAddress} denom={denom} openOperation={openOperation} />
       )}
       {!notificationsOpen && tab === "more" && more === "menu" && (
         <MoreMenu setMore={setMore} experimentalV5={experimentalV5} />
@@ -440,6 +468,9 @@ export default function App() {
       )}
       {!notificationsOpen && tab === "more" && more === "settings/contacts" && (
         <Contacts onClose={() => setMore("settings")} />
+      )}
+      {!notificationsOpen && tab === "more" && more === "settings/privacy" && (
+        <Privacy onClose={() => setMore("settings")} />
       )}
       {!notificationsOpen && tab === "more" && more === "settings/reveal-phrase" && (
         <RevealPhrase onClose={() => setMore("settings")} />
@@ -475,6 +506,7 @@ export default function App() {
                 if (t.k === "more") setMore("menu");
                 setSendOpen(false);
                 setReceiveOpen(false);
+                setTokensOpen(false);
               }}
               aria-current={tab === t.k ? "page" : undefined}
             >
@@ -682,6 +714,7 @@ function tabTitle(tab: Tab, more: MoreScreen): string {
       if (more === "agents") return "Agents";
       if (more === "settings") return "Settings";
       if (more === "settings/contacts") return "Contacts";
+      if (more === "settings/privacy") return "Privacy";
       if (more === "settings/reveal-phrase") return "Recovery phrase";
       if (more === "settings/reset-wallet") return "Reset wallet";
       if (more === "settings/about") return "About";

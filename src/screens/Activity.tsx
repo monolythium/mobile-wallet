@@ -24,13 +24,18 @@ import type { PendingTx } from "../sdk/pending-tx";
 import { useExperimentalV5 } from "../sdk/use-feature-flags";
 import { usePendingTxs } from "../sdk/use-pending-tx";
 import { ActivityDetailSheet } from "../components/ActivityDetailSheet";
+import type { Denom } from "../sdk/privacy";
 
 interface Props {
   /** Hex address (`0x…`) bound to the unlocked vault. */
   selfAddress: string | null;
+  /** Active display denomination. Activity is public-only; in private mode
+   *  the screen shows the disclosure state. */
+  denom: Denom;
 }
 
-export function Activity({ selfAddress }: Props) {
+export function Activity({ selfAddress, denom }: Props) {
+  const isPrivate = denom === "private";
   const [entries, setEntries] = useState<AddressActivityEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,9 +61,32 @@ export function Activity({ selfAddress }: Props) {
   };
 
   useEffect(() => {
-    if (selfAddress === null) return;
+    // Skip the indexer read in private mode — activity is public-only, so the
+    // screen renders the disclosure state without touching the chain.
+    if (selfAddress === null || isPrivate) return;
     void refresh(selfAddress);
-  }, [selfAddress]);
+  }, [selfAddress, isPrivate]);
+
+  // Private mode — activity lives on the public side. Show the design's
+  // disclosure state rather than the public history.
+  if (isPrivate) {
+    return (
+      <div className="mw-scroll">
+        <div className="mw-card" style={{ textAlign: "center", padding: 28 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
+            Private mode
+          </div>
+          <div
+            className="row-help"
+            style={{ color: "var(--fg-400)", lineHeight: 1.55 }}
+          >
+            Activity is shown on the public side. Switch to Public on Home to
+            see your transaction history.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (selfAddress === null) {
     return (

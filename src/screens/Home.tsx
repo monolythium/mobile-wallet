@@ -9,8 +9,10 @@
 
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
+import { DenomToggle } from "../components/DenomToggle";
 import { loadChainSnapshot, type ChainSnapshot, type ChainStatus } from "../sdk/client";
 import type { WalletReadiness } from "../sdk/readiness";
+import type { Denom } from "../sdk/privacy";
 
 interface Props {
   status: ChainStatus | null;
@@ -19,9 +21,20 @@ interface Props {
   /** Internal 0x address bound to the unlocked vault. `null` until
    *  the bound address has been resolved; public UI renders typed mono1. */
   selfAddress: string | null;
+  /** Active display denomination. `private` hides amounts on this device;
+   *  the chain serves public-only balances, so private mode is a display gate. */
+  denom: Denom;
+  /** Whether the Public / Private toggle is offered (privacy gate, OFF by
+   *  default). When off the toggle is not rendered and `denom` is always
+   *  `public`. */
+  privacyEnabled: boolean;
+  /** Switch the active denomination. */
+  setDenom: (next: Denom) => void;
   openSend: () => void;
   /** Opens the Receive QR overlay. */
   openReceive: () => void;
+  /** Opens the dedicated Tokens screen (full token list). */
+  openTokens: () => void;
   /** Opens the full-screen QR scanner. */
   onScan: () => void;
   /** Navigate to the Stake tab (the real delegation flow). */
@@ -42,18 +55,25 @@ export function Home({
   statusError,
   readiness,
   selfAddress,
+  denom,
+  privacyEnabled,
+  setDenom,
   openSend,
   openReceive,
+  openTokens,
   onScan,
   goStake,
 }: Props) {
+  const isPrivate = denom === "private";
   const [balance, setBalance] = useState<BalanceState>({ kind: "loading" });
 
   // Read the live native balance for the bound address. Mirrors Activity:
   // one read on mount / when the address resolves; the snapshot carries its
   // own RPC-error state so an offline node renders honestly rather than 0.
+  // Skipped in private mode — the hero hides the amount by design, so there's
+  // nothing to read.
   useEffect(() => {
-    if (selfAddress === null) return;
+    if (selfAddress === null || isPrivate) return;
     let cancelled = false;
     setBalance({ kind: "loading" });
     void (async () => {
@@ -77,21 +97,36 @@ export function Home({
     return () => {
       cancelled = true;
     };
-  }, [selfAddress]);
+  }, [selfAddress, isPrivate]);
 
   const canSend = selfAddress !== null;
   const canReceive = selfAddress !== null;
 
   return (
     <div className="mw-scroll">
+      {/* Public / Private toggle — only offered when the privacy gate is on.
+          Switching drives data-denom on the root and flips every denom-aware
+          screen into its private state. */}
+      {privacyEnabled && <DenomToggle denom={denom} setDenom={setDenom} />}
+
       <div className="mw-card mw-hero">
-        <div className="mw-hero__label">Total balance</div>
-        <div className="mw-hero__amount">
-          {/* No on-chain price oracle: USD is honestly unavailable. */}
-          —<span className="tok">USD</span>
+        <div className="mw-hero__label">
+          {isPrivate ? "Private balance" : "Total balance"}
         </div>
+        {isPrivate ? (
+          <div className="mw-hero__amount hidden">amount hidden by design</div>
+        ) : (
+          <div className="mw-hero__amount">
+            {/* No on-chain price oracle: USD is honestly unavailable. */}
+            —<span className="tok">USD</span>
+          </div>
+        )}
         <div className="mw-hero__meta">
-          <HeroBalanceMeta selfAddress={selfAddress} balance={balance} />
+          {isPrivate ? (
+            <span>Only you and your recipients can read the amount.</span>
+          ) : (
+            <HeroBalanceMeta selfAddress={selfAddress} balance={balance} />
+          )}
         </div>
         <div className="mw-actions">
           <button
@@ -135,7 +170,15 @@ export function Home({
         </div>
       </div>
 
-      <TokensCard selfAddress={selfAddress} balance={balance} />
+      {/* Tokens live on the public side (the chain serves public-only
+          balances) — hidden in private mode, matching the design shell. */}
+      {!isPrivate && (
+        <TokensCard
+          selfAddress={selfAddress}
+          balance={balance}
+          openTokens={openTokens}
+        />
+      )}
 
       <div className="mw-card">
         <div className="mw-card__head">
@@ -208,26 +251,32 @@ function HeroBalanceMeta({
   );
 }
 
-/** Tokens card. The chain exposes only the native LYTH balance — there is no
- *  MRC token-list index for an arbitrary address — so this card shows the one
- *  honest row (native LYTH) and labels the count accordingly. USD stays an
- *  em-dash for want of a price oracle. */
+/** Tokens card. Shows the honest native LYTH row (read via eth_getBalance) and
+ *  links to the dedicated Tokens screen, where any indexed MRC token balances
+ *  the connected node serves are listed alongside it. USD stays an em-dash for
+ *  want of a price oracle. */
 function TokensCard({
   selfAddress,
   balance,
+  openTokens,
 }: {
   selfAddress: string | null;
   balance: BalanceState;
+  openTokens: () => void;
 }) {
-  const heldLabel =
-    balance.kind === "ok" ? "1 held" : balance.kind === "loading" ? "loading" : "—";
-
   return (
     <div className="mw-card">
       <div className="mw-card__head">
         <h3>Tokens</h3>
         <div className="spacer" />
-        <span className="more">{heldLabel}</span>
+        <button
+          type="button"
+          className="mw-btn"
+          onClick={openTokens}
+          style={{ padding: "5px 10px", fontSize: 12 }}
+        >
+          View all
+        </button>
       </div>
 
       {selfAddress === null ? (

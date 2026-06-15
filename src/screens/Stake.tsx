@@ -1,5 +1,15 @@
-// Stake — current delegations + cluster directory + delegate flow +
-// autovote (§25.1).
+// Stake — total-staked / earned hero + current delegations + cluster
+// directory + delegate flow + autovote (§25.1).
+//
+// The hero (per the MStake design) leads with three honest figures read
+// live off-chain: TOTAL STAKED (the effective LYTH weight = balance ×
+// total delegated bps), EARNED (claimable pending rewards from
+// `lyth_pendingRewards` — read straight off the wire, never an APR
+// projection), and CLUSTER SLOTS (the count of clusters the wallet
+// delegates to). A "Claim rewards" action sits in the hero; per-delegation
+// rows expose unstake (undelegate) + restake (redelegate). Staking here is
+// non-custodial: there is NO unbonding period — undelegate is instant —
+// so the sheet says so rather than inventing a lock-up.
 //
 // Delegation runs over the precompile at `0x…100A`. The chain may
 // reject the call until the precompile is activated; wallets surface
@@ -20,18 +30,25 @@ import { useCallback, useEffect, useState } from "react";
 import {
   addressToTypedBech32,
   DIVERSITY_SCORE_MAX,
+  formatLythoshi,
   type ClusterDirectoryEntryResponse,
   type ClusterDiversityView,
   type DelegationsResponse,
+  type PendingRewardsResponse,
 } from "@monolythium/core-sdk";
 import type { OperationRequest } from "../components/OperationsDrawer";
 import {
+  buildClaimRewardsCalldata,
   buildDelegateCalldata,
+  buildRedelegateCalldata,
+  buildUndelegateCalldata,
   DELEGATION_PRECOMPILE,
   fetchClusterDirectory,
   fetchDelegations,
+  fetchPendingRewards,
   submitStakingTx,
 } from "../sdk/staking";
+import { loadChainSnapshot, type ChainSnapshot } from "../sdk/client";
 import {
   computeAutovotePlan,
   fetchClusterDiversity,
@@ -43,10 +60,14 @@ import {
   unlockViaBiometric,
 } from "../sdk/signer";
 import { useExperimentalV5 } from "../sdk/use-feature-flags";
+import type { Denom } from "../sdk/privacy";
 
 interface Props {
   /** Hex address (`0x…`) bound to the unlocked vault. */
   selfAddress: string | null;
+  /** Active display denomination. Staking lives on the public chain; in
+   *  private mode the screen shows the disclosure state. */
+  denom: Denom;
   openOperation: (req: OperationRequest) => void;
 }
 
@@ -73,12 +94,18 @@ const AUTOVOTE_MODES: { mode: AutovoteMode; label: string; blurb: string }[] = [
   { mode: "custom", label: "Custom", blurb: "Pick clusters manually" },
 ];
 
-export function Stake({ selfAddress, openOperation }: Props) {
+export function Stake({ selfAddress, denom, openOperation }: Props) {
+  const isPrivate = denom === "private";
   const [delegations, setDelegations] = useState<DelegationsResponse | null>(null);
   const [clusters, setClusters] = useState<ClusterDirectoryEntryResponse[]>([]);
   const [diversity, setDiversity] = useState<Map<number, ClusterDiversityView>>(
     new Map(),
   );
+  // Pending rewards (the "earned" figure) + balance (the "Max" / total-staked
+  // base) — both read live off-chain. `null` = not yet loaded or unavailable;
+  // never substituted with a fabricated value.
+  const [rewards, setRewards] = useState<PendingRewardsResponse | null>(null);
+  const [snapshot, setSnapshot] = useState<ChainSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<DelegateFormState>({ kind: "closed" });
@@ -96,13 +123,24 @@ export function Stake({ selfAddress, openOperation }: Props) {
     setError(null);
     try {
       const bech32m = addressToTypedBech32("user", addr);
-      const [d, dir] = await Promise.all([
+      // Delegations + pending rewards + the native balance are all best-effort
+      // hero inputs: a node that can't serve them leaves the figure honestly
+      // blank (`null`), never a stand-in number. The cluster directory is the
+      // one hard dependency (the screen is unusable without it) so its failure
+      // surfaces the screen-level error.
+      const [d, rew, snap, dir] = await Promise.all([
         fetchDelegations(bech32m).catch(() => null),
+        fetchPendingRewards(bech32m).catch(() => null),
+        loadChainSnapshot(addr).catch(() => null),
         fetchClusterDirectory(1, 20).catch((cause: unknown) => {
           throw cause;
         }),
       ]);
       setDelegations(d);
+      setRewards(rew);
+      // loadChainSnapshot returns a carrier with its own `.error`; treat a
+      // surfaced RPC error the same as no balance (hero base stays honest).
+      setSnapshot(snap && !snap.error ? snap : null);
       setClusters(dir.clusters);
     } catch (cause) {
       setError((cause as Error)?.message ?? "load failed");
@@ -112,9 +150,32 @@ export function Stake({ selfAddress, openOperation }: Props) {
   }, []);
 
   useEffect(() => {
-    if (selfAddress === null) return;
+    // Skip the live reads in private mode — staking is public-only, so the
+    // screen renders the disclosure state without touching the chain.
+    if (selfAddress === null || isPrivate) return;
     void refresh(selfAddress);
-  }, [selfAddress, refresh]);
+  }, [selfAddress, isPrivate, refresh]);
+
+  // Private mode — rewards and delegations live on the public chain. Show the
+  // design's disclosure state rather than the staking surface.
+  if (isPrivate) {
+    return (
+      <div className="mw-scroll">
+        <div className="mw-card" style={{ textAlign: "center", padding: 28 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
+            Staking is public
+          </div>
+          <div
+            className="row-help"
+            style={{ color: "var(--fg-400)", lineHeight: 1.55 }}
+          >
+            Rewards and delegations live on the public chain. Switch to Public
+            on Home.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (selfAddress === null) {
     return (
@@ -220,6 +281,112 @@ export function Stake({ selfAddress, openOperation }: Props) {
     setForm({ kind: "closed" });
   };
 
+  // Claim rewards — claim() is a selector-only precompile call (no args). One
+  // tx claims across every active delegation. The amount shown is the live
+  // pending-rewards total, never a projection.
+  const openClaim = (totalLabel: string) => {
+    openOperation({
+      kind: "stake",
+      title: "Claim staking rewards",
+      summary: `Claim your accrued staking rewards (${totalLabel}) across every active delegation in a single transaction. Non-custodial — your delegated weight is unchanged. The chain confirms in ~1 second.`,
+      details: [
+        { k: "From", v: selfBech32m, mono: true },
+        { k: "Action", v: "claim()" },
+        { k: "Rewards", v: totalLabel, mono: true },
+        { k: "Precompile", v: "0x…100a", mono: true },
+      ],
+      confirmLabel: "Sign and claim",
+      notify: {
+        kind: "claim",
+        amountDecimal: "0",
+        counterparty: DELEGATION_PRECOMPILE.toLowerCase(),
+      },
+      execute: async () => {
+        const result = await submitStakingTx({
+          fromBech32m: selfBech32m,
+          data: buildClaimRewardsCalldata(),
+          unlockBackend: makeBiometricBackendFactory({
+            unlock: unlockViaBiometric,
+          }),
+        });
+        void refresh(selfAddress);
+        return result.txHash;
+      },
+    });
+  };
+
+  // Unstake — undelegate(uint32) removes the cluster's delegation row. The
+  // weight is non-custodial, so removal is INSTANT: no unbonding period, no
+  // redemption queue. The sheet states that plainly.
+  const openUnstake = (clusterId: number, weightBps: number) => {
+    const weightLabel = `${(weightBps / 100).toFixed(2)}%`;
+    openOperation({
+      kind: "stake",
+      title: `Unstake from cluster ${clusterId}`,
+      summary: `Remove your ${weightLabel} delegation from cluster ${clusterId}. Non-custodial — nothing was escrowed, so removal is instant with no unbonding period. The chain confirms in ~1 second.`,
+      details: [
+        { k: "From", v: selfBech32m, mono: true },
+        { k: "Cluster", v: String(clusterId), mono: true },
+        { k: "Weight removed", v: `${weightLabel} of balance`, mono: true },
+        { k: "Unbonding", v: "None — instant" },
+        { k: "Precompile", v: "0x…100a", mono: true },
+      ],
+      confirmLabel: "Sign and unstake",
+      notify: {
+        kind: "undelegate",
+        amountDecimal: "0",
+        counterparty: DELEGATION_PRECOMPILE.toLowerCase(),
+      },
+      execute: async () => {
+        // undelegate(uint32): cluster only, value = 0. Instant removal.
+        const result = await submitStakingTx({
+          fromBech32m: selfBech32m,
+          data: buildUndelegateCalldata(clusterId),
+          unlockBackend: makeBiometricBackendFactory({
+            unlock: unlockViaBiometric,
+          }),
+        });
+        void refresh(selfAddress);
+        return result.txHash;
+      },
+    });
+  };
+
+  // Restake — redelegate(uint32 src, uint32 dst, uint16 weightBps) moves the
+  // existing weight from one cluster to another in a single tx.
+  const openRedelegate = (srcCluster: number, dstCluster: number, weightBps: number) => {
+    const weightLabel = `${(weightBps / 100).toFixed(2)}%`;
+    openOperation({
+      kind: "stake",
+      title: `Restake to cluster ${dstCluster}`,
+      summary: `Move your ${weightLabel} delegation from cluster ${srcCluster} to cluster ${dstCluster} in a single transaction. Non-custodial — no unbonding, no escrow. The chain confirms in ~1 second.`,
+      details: [
+        { k: "From", v: selfBech32m, mono: true },
+        { k: "Source", v: `Cluster ${srcCluster}`, mono: true },
+        { k: "Destination", v: `Cluster ${dstCluster}`, mono: true },
+        { k: "Weight", v: `${weightLabel} of balance`, mono: true },
+        { k: "Precompile", v: "0x…100a", mono: true },
+      ],
+      confirmLabel: "Sign and restake",
+      notify: {
+        kind: "redelegate",
+        amountDecimal: "0",
+        counterparty: DELEGATION_PRECOMPILE.toLowerCase(),
+      },
+      execute: async () => {
+        const result = await submitStakingTx({
+          fromBech32m: selfBech32m,
+          data: buildRedelegateCalldata(srcCluster, dstCluster, weightBps),
+          unlockBackend: makeBiometricBackendFactory({
+            unlock: unlockViaBiometric,
+          }),
+        });
+        void refresh(selfAddress);
+        return result.txHash;
+      },
+    });
+  };
+
   // Apply an autovote plan: the chain has no multi-delegate calldata, so we
   // submit one delegate tx PER allocation, sequentially. Partial failure is
   // surfaced honestly — the drawer reports the first failure and which
@@ -278,8 +445,92 @@ export function Stake({ selfAddress, openOperation }: Props) {
     });
   };
 
+  // ── Hero figures (all read live; never fabricated) ──────────────────────
+  // EARNED: settled + unsettled claimable rewards straight off
+  // `lyth_pendingRewards`. Hex lythoshi → LYTH via the SDK formatter.
+  const earnedLythoshi = (() => {
+    if (!rewards) return null;
+    try {
+      return BigInt(rewards.totalAmountLythoshi);
+    } catch {
+      return null;
+    }
+  })();
+  const earnedLabel =
+    earnedLythoshi === null
+      ? "—"
+      : `${formatLythoshi(earnedLythoshi, { includeUnit: false })} LYTH`;
+  const canClaim = earnedLythoshi !== null && earnedLythoshi > 0n;
+
+  // TOTAL STAKED: effective LYTH weight = balance × (total delegated bps /
+  // 10000). Both inputs are live; if either is missing the figure is honestly
+  // blank rather than partial.
+  const totalBps = delegations?.totalBps ?? 0;
+  const stakedLabel = (() => {
+    if (snapshot === null || delegations === null) return "—";
+    if (totalBps === 0) return "0 LYTH";
+    try {
+      const balanceLythoshi = BigInt(snapshot.balanceLythoshiHex);
+      const effective = (balanceLythoshi * BigInt(totalBps)) / 10_000n;
+      return `${formatLythoshi(effective, { includeUnit: false })} LYTH`;
+    } catch {
+      return "—";
+    }
+  })();
+
+  // CLUSTER SLOTS: how many clusters this wallet delegates weight to.
+  const slotCount = delegations?.rows.length ?? 0;
+
   return (
     <div className="mw-scroll">
+      {/* Hero — total staked / earned / cluster slots (MStake design). */}
+      <div className="mw-card mw-hero">
+        <div className="mw-hero__label">Total staked</div>
+        <div className="mw-hero__amount">
+          {stakedLabel === "—" ? (
+            <>—<span className="tok">LYTH</span></>
+          ) : (
+            <>
+              {stakedLabel.replace(" LYTH", "")}
+              <span className="tok">LYTH</span>
+            </>
+          )}
+        </div>
+        <div className="mw-hero__meta">
+          <span>
+            Earned <b>{earnedLabel}</b>
+          </span>
+          <span>
+            Cluster slots <b>{slotCount}</b>
+          </span>
+          <span>
+            Weight <b>{(totalBps / 100).toFixed(2)}%</b>
+          </span>
+        </div>
+        <button
+          type="button"
+          className="mw-btn mw-btn--primary mw-btn--block"
+          style={{ marginTop: 16 }}
+          onClick={() => openClaim(earnedLabel)}
+          disabled={!canClaim}
+        >
+          {earnedLythoshi === null
+            ? "Rewards unavailable"
+            : canClaim
+              ? `Claim ${earnedLabel}`
+              : "No rewards yet"}
+        </button>
+        {/* Honest about the non-custodial model: no lock-up, no projection. */}
+        <div
+          className="row-help"
+          style={{ marginTop: 10, color: "var(--fg-400)", lineHeight: 1.5 }}
+        >
+          Non-custodial staking — your LYTH stays spendable, there is no
+          unbonding period, and rewards settle on-chain (no APR is projected
+          here).
+        </div>
+      </div>
+
       <div className="mw-card">
         <div className="mw-card__head">
           <h3>Your delegations</h3>
@@ -310,23 +561,17 @@ export function Stake({ selfAddress, openOperation }: Props) {
           </div>
         ) : null}
         {delegations?.rows.map((row) => (
-          <div key={row.cluster} className="mw-row">
-            <div className="mw-row__icon">C{row.cluster}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="mw-row__name">Cluster {row.cluster}</div>
-              <div className="mw-row__sub">
-                {(row.weightBps / 100).toFixed(2)}% of your wallet weight
-              </div>
-            </div>
-            <div className="mw-row__right">
-              <div
-                className="primary"
-                style={{ fontFamily: "var(--f-mono)", fontSize: 13 }}
-              >
-                {(row.weightBps / 100).toFixed(2)}%
-              </div>
-            </div>
-          </div>
+          <DelegationRow
+            key={row.cluster}
+            cluster={row.cluster}
+            weightBps={row.weightBps}
+            rewardLythoshi={rewardForCluster(rewards, row.cluster)}
+            restakeTargets={(delegations?.rows ?? [])
+              .map((r) => r.cluster)
+              .filter((c) => c !== row.cluster)}
+            onUnstake={() => openUnstake(row.cluster, row.weightBps)}
+            onRestake={(dst) => openRedelegate(row.cluster, dst, row.weightBps)}
+          />
         ))}
         {delegations && delegations.totalBps > 0 && (
           <div
@@ -665,6 +910,148 @@ function ClusterRow({
             >
               Review
             </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Per-cluster unsettled reward (lythoshi) for the given cluster, or `null`
+ *  when the pending-rewards read is absent or has no row. Read straight off
+ *  `lyth_pendingRewards` — no projection. */
+function rewardForCluster(
+  rewards: PendingRewardsResponse | null,
+  cluster: number,
+): bigint | null {
+  if (!rewards) return null;
+  const row = rewards.rows.find((r) => r.cluster === cluster);
+  if (!row) return null;
+  try {
+    return BigInt(row.unsettledAmountLythoshi);
+  } catch {
+    return null;
+  }
+}
+
+interface DelegationRowProps {
+  cluster: number;
+  weightBps: number;
+  /** Live unsettled reward for this cluster, or `null` when unavailable. */
+  rewardLythoshi: bigint | null;
+  /** Other clusters this wallet delegates to — valid restake destinations. */
+  restakeTargets: number[];
+  onUnstake: () => void;
+  onRestake: (dst: number) => void;
+}
+
+/** One active delegation row with inline unstake + restake actions. Restake
+ *  reveals a destination picker over the wallet's OTHER active clusters (the
+ *  redelegate precompile moves weight between clusters the wallet already
+ *  holds). When there is no other cluster, only unstake is offered. */
+function DelegationRow({
+  cluster,
+  weightBps,
+  rewardLythoshi,
+  restakeTargets,
+  onUnstake,
+  onRestake,
+}: DelegationRowProps) {
+  const [restakeOpen, setRestakeOpen] = useState(false);
+  const weightLabel = `${(weightBps / 100).toFixed(2)}%`;
+  const canRestake = restakeTargets.length > 0;
+
+  return (
+    <div
+      className="mw-row"
+      style={{ flexDirection: "column", alignItems: "stretch", gap: 8, padding: "10px 0" }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="mw-row__icon">C{cluster}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="mw-row__name">Cluster {cluster}</div>
+          <div className="mw-row__sub">
+            {weightLabel} of your wallet weight
+            {rewardLythoshi !== null && rewardLythoshi > 0n && (
+              <span style={{ color: "var(--fg-400)" }}>
+                {" · "}earned{" "}
+                {formatLythoshi(rewardLythoshi, { includeUnit: false })} LYTH
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="mw-row__right">
+          <div
+            className="primary"
+            style={{ fontFamily: "var(--f-mono)", fontSize: 13 }}
+          >
+            {weightLabel}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 6 }}>
+        <button
+          type="button"
+          className="mw-btn"
+          onClick={onUnstake}
+          style={{ flex: 1, padding: "6px 10px", fontSize: 12 }}
+        >
+          Unstake
+        </button>
+        <button
+          type="button"
+          className="mw-btn"
+          onClick={() => setRestakeOpen((v) => !v)}
+          disabled={!canRestake}
+          style={{
+            flex: 1,
+            padding: "6px 10px",
+            fontSize: 12,
+            opacity: canRestake ? 1 : 0.4,
+          }}
+        >
+          Restake
+        </button>
+      </div>
+
+      {restakeOpen && canRestake && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            padding: 10,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid var(--fg-700)",
+            borderRadius: 8,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              color: "var(--fg-400)",
+            }}
+          >
+            Move {weightLabel} to
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {restakeTargets.map((dst) => (
+              <button
+                key={dst}
+                type="button"
+                className="mw-btn"
+                onClick={() => {
+                  setRestakeOpen(false);
+                  onRestake(dst);
+                }}
+                style={{ padding: "6px 10px", fontSize: 12 }}
+              >
+                Cluster {dst}
+              </button>
+            ))}
           </div>
         </div>
       )}
