@@ -40,6 +40,7 @@ import {
   submitTransactionWithPrivacy,
 } from "@monolythium/core-sdk/crypto";
 import { getProvider } from "./client";
+import { nextSendNonce, recordSubmittedNonce } from "./pending-nonce";
 
 export interface SendLythArgs {
   /** Typed ADR-0038 user address to debit. Must match the signer's address. */
@@ -114,12 +115,16 @@ export async function sendLyth(
   const rpc = getProvider().rpcClient;
 
   // 1. Sender nonce + chain id, in parallel (no key access yet).
-  const [nonce, chainIdFromChain] = await Promise.all([
+  const [committedNonce, chainIdFromChain] = await Promise.all([
     rpc.ethGetTransactionCount(fromHex, "pending"),
     rpc.ethChainId(),
   ]);
 
   const chainId = args.chainId ?? chainIdFromChain;
+  // Local pending-nonce: the chain returns only the committed nonce (the
+  // "pending" tag above is a no-op), so a 2nd send before the 1st commits would
+  // reuse it. Sign max(committed, lastSubmitted+1); recorded on success below.
+  const nonce = nextSendNonce(fromHex, chainId, committedNonce);
   const amountLythoshi = parseLythToLythoshi(args.amountLyth);
 
   // 2. Sane per-unit fee defaults from the live quote. `resolveExecutionFee`
@@ -172,6 +177,8 @@ export async function sendLyth(
     ...(encryptionKey !== undefined ? { encryptionKey } : {}),
     ...(args.mempoolClass !== undefined ? { class: args.mempoolClass } : {}),
   });
+  // Success — advance the local pending nonce so the next submit won't reuse it.
+  recordSubmittedNonce(fromHex, chainId, nonce);
 
   return {
     txHash,

@@ -53,6 +53,7 @@ import {
   DelegationPrecompileError,
 } from "@monolythium/core-sdk";
 import { getProvider } from "./client";
+import { nextSendNonce, recordSubmittedNonce } from "./pending-nonce";
 
 /** Sane execution-unit limit for a delegation-precompile call. The
  *  delegate / undelegate / redelegate / claim ops fit comfortably under
@@ -165,10 +166,15 @@ export async function submitStakingTx(
   const rpc = getProvider().rpcClient;
   const fromHex = typedBech32ToAddress(args.fromBech32m, "user").hex;
 
-  const [nonce, chainId] = await Promise.all([
+  const [committedNonce, chainId] = await Promise.all([
     rpc.ethGetTransactionCount(fromHex, "pending"),
     rpc.ethChainId(),
   ]);
+  // Local pending-nonce: chain exposes only the committed nonce, so a stake
+  // right after a send (or two stakes) before commit would reuse it. Sign
+  // max(committed, lastSubmitted+1); recorded on success below. Shares the
+  // tracker with sendLyth so cross-path ordering is correct.
+  const nonce = nextSendNonce(fromHex, chainId, committedNonce);
 
   // Sane per-unit fee defaults from the live quote: max execution-unit
   // price derived (live quote × safety headroom, clamped to a floor) with
@@ -200,6 +206,8 @@ export async function submitStakingTx(
     tx,
     private: false,
   });
+  // Success — advance the local pending nonce so the next submit won't reuse it.
+  recordSubmittedNonce(fromHex, chainId, nonce);
   return { txHash };
 }
 

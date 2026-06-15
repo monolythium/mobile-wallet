@@ -35,6 +35,7 @@ import {
   submitStakingTx,
 } from "../staking";
 import { resetProviderForTest, setProviderForTest } from "../client";
+import { _resetPendingNonces } from "../pending-nonce";
 
 const SELF_HEX = "0x1111111111111111111111111111111111111111";
 const SELF_TYPED = addressToTypedBech32("user", SELF_HEX);
@@ -116,6 +117,8 @@ function installProvider(observed: CapturedCall[], meshEchoHash: string) {
 
 afterEach(() => {
   resetProviderForTest();
+  // The pending-nonce tracker is module-level; each test is a fresh session.
+  _resetPendingNonces();
 });
 
 describe("delegation calldata — pinned to SDK encoders", () => {

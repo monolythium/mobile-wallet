@@ -28,6 +28,7 @@ import {
   typedBech32ToAddress,
 } from "@monolythium/core-sdk";
 import { previewMaxFeeLyth, sendLyth } from "../send";
+import { _resetPendingNonces } from "../pending-nonce";
 import {
   type MlDsa65Backend,
   type NativeEvmTxFields,
@@ -129,6 +130,8 @@ function installProvider(observed: CapturedCall[], meshEchoHash: string) {
 
 afterEach(() => {
   resetProviderForTest();
+  // The pending-nonce tracker is module-level; each test is a fresh session.
+  _resetPendingNonces();
 });
 
 describe("sendLyth — input validation", () => {
