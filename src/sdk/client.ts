@@ -14,6 +14,7 @@ import {
   RpcClient,
   SdkError,
   getRpcEndpoints,
+  selectTrustedOperatorForNetwork,
   type RpcClientOptions,
 } from "@monolythium/core-sdk";
 import {
@@ -41,6 +42,11 @@ let _client: RpcClient | null = null;
  *  init. `null` ⇒ no override; `defaultEndpoint()` is used. */
 let _override: string | null = null;
 let _clientOptions: RpcClientOptions = {};
+
+/** Upper bound on the boot-time genesis-verified operator probe. Bounds app
+ *  start: if no operator proves the pinned genesis within this window, boot
+ *  proceeds on the shipped default rather than stalling. */
+const TRUST_PROBE_TIMEOUT_MS = 4000;
 
 type EndpointListener = (endpoint: string) => void;
 const endpointListeners = new Set<EndpointListener>();
@@ -117,10 +123,39 @@ export function currentEndpoint(): string {
 export async function initEndpoint(): Promise<void> {
   const before = effectiveEndpoint();
   const persisted = await readSelectedEndpoint();
-  if (persisted && persisted.length > 0 && persisted !== before) {
-    _override = persisted;
-    _client = buildClient();
-    emitEndpoint();
+  if (persisted && persisted.length > 0) {
+    // The user explicitly chose a peer — respect it; don't auto-override.
+    if (persisted !== before) {
+      _override = persisted;
+      _client = buildClient();
+      emitEndpoint();
+    }
+    return;
+  }
+  // No user override → upgrade the shipped default to a genesis-VERIFIED,
+  // reachable operator (orphan-fork defense; avoids blindly defaulting to a
+  // down or self-quarantined operator-1). Fail-soft + time-bounded: if no
+  // operator proves the pinned genesis in time, keep the shipped default and
+  // let the live reads surface the degraded state. Not persisted — re-verified
+  // each launch; an explicit setEndpoint() still wins and persists.
+  try {
+    const trusted = await Promise.race([
+      selectTrustedOperatorForNetwork("testnet-69420", _clientOptions),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("operator-trust probe timed out")),
+          TRUST_PROBE_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+    if (trusted.endpoint !== before) {
+      _override = trusted.endpoint;
+      _client = buildClient();
+      emitEndpoint();
+    }
+  } catch {
+    // OperatorTrustError (all untrusted / offline / quarantined) or timeout →
+    // keep the shipped default. Degraded state surfaces via the live reads.
   }
 }
 

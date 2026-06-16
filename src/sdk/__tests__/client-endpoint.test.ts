@@ -14,6 +14,20 @@ vi.mock("../peers", async (importOriginal) => {
   };
 });
 
+// Stub the SDK's genesis-verified operator selection so init never hits the
+// network. Default (set in beforeEach) is a rejection → the fail-soft path
+// keeps the shipped default.
+const selectSpy = vi.hoisted(() =>
+  vi.fn<() => Promise<{ endpoint: string }>>(),
+);
+vi.mock("@monolythium/core-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@monolythium/core-sdk")>();
+  return {
+    ...actual,
+    selectTrustedOperatorForNetwork: selectSpy,
+  };
+});
+
 import {
   currentEndpoint,
   getProvider,
@@ -27,6 +41,8 @@ beforeEach(() => {
   resetProviderForTest();
   readSpy.mockReset().mockResolvedValue(null);
   writeSpy.mockReset().mockResolvedValue(undefined);
+  // Default: no trusted operator → fail-soft to the shipped default.
+  selectSpy.mockReset().mockRejectedValue(new Error("no trusted operator"));
 });
 
 afterEach(() => {
@@ -34,11 +50,28 @@ afterEach(() => {
 });
 
 describe("client endpoint switching", () => {
-  it("uses the shipped default when nothing is persisted", async () => {
+  it("keeps the shipped default when nothing is persisted and no operator is trusted", async () => {
     const before = currentEndpoint();
     await initEndpoint();
-    expect(currentEndpoint()).toBe(before);
+    expect(currentEndpoint()).toBe(before); // fail-soft
     expect(readSpy).toHaveBeenCalledOnce();
+    expect(selectSpy).toHaveBeenCalledOnce();
+  });
+
+  it("upgrades to a genesis-verified operator when nothing is persisted", async () => {
+    selectSpy.mockResolvedValue({ endpoint: "http://verified.example:8545" });
+    await initEndpoint();
+    expect(currentEndpoint()).toBe("http://verified.example:8545");
+    expect(getProvider().rpcClient.endpoint).toBe(
+      "http://verified.example:8545",
+    );
+  });
+
+  it("respects a persisted user choice without auto-overriding it", async () => {
+    readSpy.mockResolvedValue("https://my-peer.example/rpc");
+    await initEndpoint();
+    expect(currentEndpoint()).toBe("https://my-peer.example/rpc");
+    expect(selectSpy).not.toHaveBeenCalled(); // user choice wins; no probe
   });
 
   it("adopts a persisted endpoint at init and rebuilds the client", async () => {
