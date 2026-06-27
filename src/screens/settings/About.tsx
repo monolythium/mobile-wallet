@@ -60,7 +60,7 @@ export function About({ onClose }: Props) {
         </div>
         <div className="mw-kv">
           <div className="k">Signing</div>
-          <div className="v">ML-DSA-65 · PQM-1 v1</div>
+          <div className="v">ML-DSA-65</div>
         </div>
         <div className="mw-kv">
           <div className="k">Vault</div>

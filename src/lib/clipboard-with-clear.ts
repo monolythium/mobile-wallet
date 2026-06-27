@@ -1,4 +1,4 @@
-// Clipboard helper for security-sensitive material (24-word PQM-1
+// Clipboard helper for security-sensitive material (24-word
 // recovery phrase). Copies to the OS clipboard, then schedules a best-
 // effort wipe after a configurable timeout. The wipe is best-effort
 // because navigator.clipboard.readText requires user permission and

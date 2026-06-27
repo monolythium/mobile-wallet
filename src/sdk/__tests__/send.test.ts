@@ -2,7 +2,7 @@
  * sendLyth — native PLAINTEXT submit (SDK 0.3.11 default) wire-shape tests.
  *
  * The signing + serialization is exercised at the SDK layer
- * (`buildPlaintextSubmission` / `submitTransactionWithPrivacy`); these
+ * (`buildPlaintextSubmission` / `submitTransaction`); these
  * tests cover the wallet's wrapping responsibilities:
  *   - typed-address validation (no 0x, mono1 only)
  *   - DEFAULT submit path is PLAINTEXT: nonce + chainId reads, then the
@@ -13,7 +13,7 @@
  *     same way the wallet builds it)
  *   - decimal-LYTH parsing + fee preview math
  *
- * The SDK backend is a real `MlDsa65Backend` from a generated PQM-1
+ * The SDK backend is a real `MlDsa65Backend` from a generated BIP-39
  * mnemonic; the tx fields the wallet derives from the mock RPC are
  * deterministic, so the expected canonical hash is reproducible.
  */
@@ -33,8 +33,8 @@ import {
   type MlDsa65Backend,
   type NativeEvmTxFields,
   buildPlaintextSubmission,
-  pqm1MnemonicToMlDsa65Backend,
-  generatePqm1Mnemonic,
+  mnemonicToMlDsa65Backend,
+  generateMnemonic,
 } from "@monolythium/core-sdk/crypto";
 import { resetProviderForTest, setProviderForTest } from "../client";
 
@@ -138,7 +138,7 @@ describe("sendLyth — input validation", () => {
   it("rejects raw 0x addresses in `from`", async () => {
     const observed: CapturedCall[] = [];
     installProvider(observed, "0x" + "00".repeat(32));
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     await expect(
       sendLyth(
         { unlockBackend: async () => backend },
@@ -151,7 +151,7 @@ describe("sendLyth — input validation", () => {
   it("rejects raw 0x addresses in `to`", async () => {
     const observed: CapturedCall[] = [];
     installProvider(observed, "0x" + "00".repeat(32));
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     await expect(
       sendLyth(
         { unlockBackend: async () => backend },
@@ -164,7 +164,7 @@ describe("sendLyth — input validation", () => {
 describe("sendLyth — DEFAULT path is PLAINTEXT", () => {
   it("submits via mesh_submitTx (NOT lyth_submitEncrypted) by default", async () => {
     const observed: CapturedCall[] = [];
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     const amountLyth = "1.5";
     const hash = expectedTxHash(backend, DEAD_TYPED, amountLyth);
     installProvider(observed, hash);
@@ -175,7 +175,6 @@ describe("sendLyth — DEFAULT path is PLAINTEXT", () => {
     );
 
     expect(result.txHash).toBe(hash);
-    expect(result.encrypted).toBe(false);
 
     const methods = observed.map((c) => c.method);
     // Reads first (nonce + chainId), then the live fee quote, then the
@@ -197,7 +196,7 @@ describe("sendLyth — DEFAULT path is PLAINTEXT", () => {
 
   it("uses the SDK sane transfer limit (500k), not the old 21k floor", async () => {
     const observed: CapturedCall[] = [];
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     const amountLyth = "2";
     const hash = expectedTxHash(backend, DEAD_TYPED, amountLyth);
     installProvider(observed, hash);

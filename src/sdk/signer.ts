@@ -1,17 +1,18 @@
-// Wallet-side signer for the mobile wallet (post-EVM, ML-DSA-65 / PQM-1).
+// Wallet-side signer for the mobile wallet (post-EVM, ML-DSA-65).
 //
 // The signing primitive is `MlDsa65Backend` from `@monolythium/core-sdk`.
-// Native tx submission goes through `buildEncryptedSubmission` (in
+// Native tx submission goes through the SDK's `submitTransaction` (in
 // `send.ts`), which takes the backend, builds the inner native tx,
-// produces the ML-DSA-65 outer signature, ML-KEM-encrypts the envelope,
-// and returns wire-ready hex.
+// produces the ML-DSA-65 signature over the canonical sighash,
+// bincode-serializes the SignedTransaction, and POSTs it plaintext
+// through `mesh_submitTx`.
 //
 // Two backends ship today:
 //
 //   makeBiometricBackend({ unlock })
 //     → MlDsa65Backend that, on every signing call, re-runs the supplied
 //       `unlock()` (canonically: biometric prompt → keystore device-key →
-//       AES-GCM-decrypt envelope → PQM-1 mnemonic → ML-DSA-65 backend),
+//       AES-GCM-decrypt envelope → recovery phrase → ML-DSA-65 backend),
 //       and delegates the signing op. The mnemonic and derived seed
 //       never escape the call frame — a fresh backend is materialised
 //       for exactly the duration of one signing op.
@@ -23,7 +24,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-  pqm1MnemonicToMlDsa65Backend,
+  mnemonicToMlDsa65Backend,
   type MlDsa65Backend,
 } from "@monolythium/core-sdk/crypto";
 import {
@@ -56,7 +57,7 @@ export interface IdentityHandle {
 /**
  * Wrap the vault-unlock flow into a "give me a fresh ML-DSA-65 backend
  * for one signing op" factory. The backend's seed material is sourced
- * from the PQM-1 mnemonic carried in the decrypted payload; both stay
+ * from the recovery phrase carried in the decrypted payload; both stay
  * inside this call frame. Callers MUST drop the returned backend after
  * the signing op completes.
  */
@@ -65,7 +66,7 @@ export function makeBiometricBackendFactory(
 ): () => Promise<MlDsa65Backend> {
   return async () => {
     const payload = await args.unlock();
-    return pqm1MnemonicToMlDsa65Backend(payload.pqm1Mnemonic);
+    return mnemonicToMlDsa65Backend(payload.mnemonic);
   };
 }
 

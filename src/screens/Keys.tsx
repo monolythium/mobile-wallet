@@ -1,6 +1,6 @@
 // Keys — the wallet's signing key(s), for the "More → Security" flow.
 //
-// This wallet has exactly ONE signing key: the ML-DSA-65 (PQM-1 v1) key
+// This wallet has exactly ONE signing key: the ML-DSA-65 key
 // derived from the device's sealed mnemonic on every unlock (see
 // sdk/vault.ts + sdk/signer.ts). It never holds a raw key on disk and there
 // is no hardware-pairing / passkey / multi-key surface on mobile. So this
@@ -98,7 +98,7 @@ export function Keys() {
         }}
       >
         The signing key is derived from your recovery phrase on every unlock
-        (post-quantum ML-DSA-65, PQM-1 v1). The raw key is never stored on
+        (post-quantum ML-DSA-65). The raw key is never stored on
         disk.
       </p>
     </div>

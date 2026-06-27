@@ -15,7 +15,7 @@ const CLEAR_AFTER_MS = 30_000;
 const FEEDBACK_RESET_MS = 3_000;
 
 /**
- * Two-column 24-word grid for PQM-1 recovery phrase display. Mobile
+ * Two-column 24-word grid for recovery phrase display. Mobile
  * chrome: larger word font, fits inside a `.mw-card`. Splits on
  * whitespace internally; callers pass the raw mnemonic string.
  */

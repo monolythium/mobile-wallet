@@ -1,7 +1,7 @@
 // Agent sub-account store — local registry of the sub-accounts a principal
 // controls (WP §18.8 spending-policy delegation).
 //
-// A sub-account is just a fresh PQM-1 / ML-DSA-65 keypair (see
+// A sub-account is just a fresh ML-DSA-65 keypair (see
 // `spending-policy.ts:generateAgentSubAccount`). Its SECRET is the 24-word
 // mnemonic — the same shape as the wallet's own vault payload. The split:
 //
@@ -96,8 +96,8 @@ export async function listAgents(): Promise<AgentRecord[]> {
 }
 
 export interface AddAgentInput {
-  /** 24-word PQM-1 mnemonic (the secret) from generateAgentSubAccount. */
-  pqm1Mnemonic: string;
+  /** 24-word recovery phrase (the secret) from generateAgentSubAccount. */
+  mnemonic: string;
   /** Internal lower-hex address derived from the mnemonic. */
   addressHex: string;
   /** Cached typed bech32m address. */
@@ -130,7 +130,7 @@ export async function addAgent(input: AddAgentInput): Promise<AgentRecord> {
   try {
     await invoke("keychain_set", {
       key: keychainSlot(hex),
-      value: input.pqm1Mnemonic,
+      value: input.mnemonic,
     });
   } catch (cause) {
     throw new AgentStoreError(
@@ -151,7 +151,7 @@ export async function addAgent(input: AddAgentInput): Promise<AgentRecord> {
 }
 
 /**
- * Unlock a controlled sub-account's PQM-1 mnemonic from the keychain. Used to
+ * Unlock a controlled sub-account's recovery phrase from the keychain. Used to
  * produce the sub-account's claim-bound signature in the §18.8 fresh-claim
  * dance. Throws `AgentStoreError` if the slot is missing (the agent was
  * created on another device, or the keychain was wiped).

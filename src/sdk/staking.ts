@@ -22,11 +22,10 @@
 // All encoders + the precompile address come from `@monolythium/core-sdk`
 // (delegation.ts) so the wallet never diverges from the chain ABI.
 //
-// Submission uses the SDK PLAINTEXT path by default
-// (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`)
-// — the working inclusion path on the optional-encryption chain. Staking
-// (delegate / undelegate / redelegate / claim) is never user-toggleable to
-// the encrypted preview path; it always goes plaintext.
+// Submission uses the SDK PLAINTEXT path (`submitTransaction` ->
+// `mesh_submitTx`) — the chain's sole inclusion path since the v2
+// re-genesis dropped the encrypted mempool. Staking (delegate /
+// undelegate / redelegate / claim) always goes plaintext.
 //
 // The chain may reject the call at the precompile-gate if delegation
 // isn't activated yet on the connected network — wallets surface the
@@ -35,7 +34,7 @@
 import {
   type MlDsa65Backend,
   type NativeEvmTxFields,
-  submitTransactionWithPrivacy,
+  submitTransaction,
 } from "@monolythium/core-sdk/crypto";
 import type {
   ClusterDirectoryPageResponse,
@@ -137,11 +136,10 @@ export async function fetchPendingRewards(
 
 /**
  * Submit a delegation-precompile call (delegate / undelegate / redelegate
- * / claim). Drives the SDK PLAINTEXT path
- * (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`,
- * with the node-echoed canonical tx hash validated), with `to` set to the
- * delegation precompile address. This is the working inclusion path on the
- * optional-encryption chain.
+ * / claim). Drives the SDK PLAINTEXT path (`submitTransaction` ->
+ * `mesh_submitTx`, with the node-echoed canonical tx hash validated), with
+ * `to` set to the delegation precompile address. This is the chain's sole
+ * inclusion path since the v2 re-genesis dropped the encrypted mempool.
  *
  * NON-CUSTODIAL: every staking call (including delegate) is sent with
  * value = 0. The chain reverts (UnexpectedValue, tag 0x020e) if any native
@@ -198,14 +196,9 @@ export async function submitStakingTx(
   };
 
   const backend = await args.unlockBackend();
-  // Plaintext default (private: false) -> mesh_submitTx, the working
-  // inclusion path; returns the validated canonical native tx hash.
-  const txHash = await submitTransactionWithPrivacy({
-    client: rpc,
-    backend,
-    tx,
-    private: false,
-  });
+  // Plaintext mesh_submitTx — the chain's sole inclusion path; returns the
+  // validated canonical native tx hash.
+  const txHash = await submitTransaction({ client: rpc, backend, tx });
   // Success — advance the local pending nonce so the next submit won't reuse it.
   recordSubmittedNonce(fromHex, chainId, nonce);
   return { txHash };

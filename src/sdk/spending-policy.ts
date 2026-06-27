@@ -9,9 +9,9 @@
 // window, and an explicit policy-expiry.
 //
 // Sub-account lifecycle (no dedicated SDK creation/funding precompile — the
-// sub-account is just a fresh PQM-1 keypair the principal controls):
+// sub-account is just a fresh ML-DSA-65 keypair the principal controls):
 //
-//   create  := generateAgentSubAccount() — fresh PQM-1 / ML-DSA-65 keypair.
+//   create  := generateAgentSubAccount() — fresh ML-DSA-65 keypair.
 //   fund    := an ordinary native LYTH transfer (sendLyth) from the principal
 //              to the sub-account address.  (Lives in the Agents screen.)
 //   register:= the on-chain write below.
@@ -22,11 +22,12 @@
 // signature (3309 bytes) over `composeClaimBoundMessage(chainId, args)`.
 // This is a TWO-KEY DANCE:
 //
-//   1. unlock the SUB-ACCOUNT'S PQM-1 key, sign the bound message → 3309-byte
+//   1. unlock the SUB-ACCOUNT'S ML-DSA-65 key, sign the bound message → 3309-byte
 //      sig + 1952-byte pubkey  (signClaimBoundMessage below);
-//   2. the PRINCIPAL signs + submits the OUTER tx via the SDK 0.3.11
-//      PLAINTEXT path (submitSpendingPolicyTx below; mesh_submitTx — the
-//      working inclusion path on the optional-encryption chain).
+//   2. the PRINCIPAL signs + submits the OUTER tx via the SDK PLAINTEXT
+//      path (submitSpendingPolicyTx below; mesh_submitTx — the chain's
+//      sole inclusion path since the v2 re-genesis dropped the encrypted
+//      mempool).
 //
 // A re-claim of an ALREADY-bound sub-account uses `setPolicy` (0x8da1a765),
 // which carries no fresh pubkey/sig. Revoke = `disable` (0xe6c09edf).
@@ -43,7 +44,7 @@
 import {
   type MlDsa65Backend,
   type NativeEvmTxFields,
-  submitTransactionWithPrivacy,
+  submitTransaction,
 } from "@monolythium/core-sdk/crypto";
 import {
   addressToTypedBech32,
@@ -64,8 +65,8 @@ import {
   type SpendingPolicyView,
 } from "@monolythium/core-sdk";
 import {
-  generatePqm1Mnemonic,
-  pqm1MnemonicToAddress,
+  generateMnemonic,
+  mnemonicToAddress,
 } from "@monolythium/core-sdk/crypto";
 import { getProvider } from "./client";
 
@@ -118,8 +119,8 @@ export function packPolicyTimeWindow(
 // -----------------------------------------------------------------------------
 
 export interface AgentSubAccount {
-  /** 24-word PQM-1 v1 mnemonic (ML-DSA-65). The principal controls this. */
-  pqm1Mnemonic: string;
+  /** 24-word BIP-39 recovery phrase (ML-DSA-65). The principal controls this. */
+  mnemonic: string;
   /** Typed `mono` bech32m address derived from the mnemonic. */
   addressBech32m: string;
   /** Internal 20-byte address (hex `0x…`) — storage-key form. */
@@ -127,16 +128,16 @@ export interface AgentSubAccount {
 }
 
 /**
- * Mint a fresh agent sub-account: a brand-new PQM-1 / ML-DSA-65 keypair the
+ * Mint a fresh agent sub-account: a brand-new ML-DSA-65 keypair the
  * principal will fund + bind to a spending policy. The caller is responsible
  * for sealing the returned mnemonic (the Agents screen stores it in the OS
  * keychain, biometric-gated) and for zeroizing any transient copy.
  */
 export function generateAgentSubAccount(): AgentSubAccount {
-  const mnemonic = generatePqm1Mnemonic();
-  const addressHex = pqm1MnemonicToAddress(mnemonic);
+  const mnemonic = generateMnemonic();
+  const addressHex = mnemonicToAddress(mnemonic);
   return {
-    pqm1Mnemonic: mnemonic,
+    mnemonic,
     addressHex,
     addressBech32m: addressToTypedBech32("user", addressHex),
   };
@@ -251,7 +252,7 @@ export async function fetchSpendingPolicy(
 }
 
 // -----------------------------------------------------------------------------
-// Write (mirrors the corrected staking.ts encrypted-envelope submit path).
+// Write (mirrors the staking.ts plaintext submit path).
 // -----------------------------------------------------------------------------
 
 export interface SubmitSpendingPolicyTxArgs {
@@ -280,12 +281,12 @@ function bigintToHex(n: bigint): string {
 
 /**
  * Submit a spending-policy precompile call (register / enable / disable). The
- * PRINCIPAL signs + submits the OUTER tx via the SDK 0.3.11 PLAINTEXT path
- * (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`,
- * with the node-echoed canonical tx hash validated) — the working inclusion
- * path on the optional-encryption chain. `tx.to` is the spending-policy
- * precompile and `tx.value` is 0 (the policy write carries no native value —
- * funding the sub-account is a separate sendLyth).
+ * PRINCIPAL signs + submits the OUTER tx via the SDK PLAINTEXT path
+ * (`submitTransaction` -> `mesh_submitTx`, with the node-echoed canonical tx
+ * hash validated) — the chain's sole inclusion path since the v2 re-genesis
+ * dropped the encrypted mempool. `tx.to` is the spending-policy precompile
+ * and `tx.value` is 0 (the policy write carries no native value — funding
+ * the sub-account is a separate sendLyth).
  *
  * Fees use the SDK's REGISTRY defaults (`resolveRegistryExecutionFee`): the
  * register/claim path carries ~5.3 KB of pubkey+sig and the register_op
@@ -326,14 +327,9 @@ export async function submitSpendingPolicyTx(
   };
 
   const backend = await args.unlockBackend();
-  // Plaintext default (private: false) -> mesh_submitTx, the working
-  // inclusion path; returns the validated canonical native tx hash.
-  const txHash = await submitTransactionWithPrivacy({
-    client: rpc,
-    backend,
-    tx,
-    private: false,
-  });
+  // Plaintext mesh_submitTx — the chain's sole inclusion path; returns the
+  // validated canonical native tx hash.
+  const txHash = await submitTransaction({ client: rpc, backend, tx });
   return { txHash };
 }
 

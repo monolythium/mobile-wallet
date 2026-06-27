@@ -139,7 +139,7 @@ async function keystoreDelete(): Promise<void> {
 }
 
 /**
- * Onboarding: take the user's password, mint a fresh PQM-1 mnemonic,
+ * Onboarding: take the user's password, mint a fresh recovery phrase,
  * derive a KEK via Argon2id, encrypt the mnemonic into the vault
  * envelope, store the device-key in the OS keystore, and return the
  * mnemonic + bound address so onboarding UI can show + verify the phrase.
@@ -149,7 +149,7 @@ async function keystoreDelete(): Promise<void> {
  * app data dir can't be created; callers handle that as "demo mode".
  */
 export interface BootstrapVaultResult {
-  /** The 24-word PQM-1 v1 mnemonic to show + verify. */
+  /** The 24-word recovery phrase to show + verify. */
   mnemonic: string;
   /** Internal 20-byte address (`0x…`) — the UI converts to typed `mono1…`. */
   address: string;
@@ -159,7 +159,7 @@ export async function bootstrapVault(
   password: string,
   options: { importMnemonic?: string } = {},
 ): Promise<BootstrapVaultResult> {
-  // 1. Generate the PQM-1 mnemonic + device-key + salt, derive KEK,
+  // 1. Generate the recovery phrase + device-key + salt, derive KEK,
   //    encrypt envelope, write file.
   const { deviceKeyHex, mnemonic, address } = await vaultBootstrap(
     password,

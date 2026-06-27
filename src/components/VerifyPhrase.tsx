@@ -146,7 +146,7 @@ export function VerifyPhrase({
             lineHeight: 1.5,
           }}
         >
-          Double-check your 24-word PQM-1 recovery phrase and try again.
+          Double-check your 24-word recovery phrase and try again.
           We&apos;ll show a fresh set of positions so the attempt is fair.
         </p>
         <div style={{ display: "flex", gap: 8 }}>

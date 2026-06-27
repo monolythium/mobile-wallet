@@ -26,8 +26,8 @@ import {
   type MlDsa65Backend,
   type NativeEvmTxFields,
   buildPlaintextSubmission,
-  pqm1MnemonicToMlDsa65Backend,
-  generatePqm1Mnemonic,
+  mnemonicToMlDsa65Backend,
+  generateMnemonic,
 } from "@monolythium/core-sdk/crypto";
 import {
   buildDelegateCalldata,
@@ -144,7 +144,7 @@ describe("delegation calldata — pinned to SDK encoders", () => {
 describe("submitStakingTx — PLAINTEXT submit", () => {
   it("posts to delegationAddressHex() via mesh_submitTx (not encrypted)", async () => {
     const observed: CapturedCall[] = [];
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     const data = buildDelegateCalldata(5, 1000);
     const hash = expectedTxHash(backend, data);
     installProvider(observed, hash);
@@ -177,7 +177,7 @@ describe("submitStakingTx — PLAINTEXT submit", () => {
 
   it("sends a delegate with value = 0 (non-custodial — no escrow)", async () => {
     const observed: CapturedCall[] = [];
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     const data = buildDelegateCalldata(3, 2500);
     // expectedTxHash pins value = 0; if the wallet attached any native value
     // the reconstructed hash would not match and SDK echo-validation throws.

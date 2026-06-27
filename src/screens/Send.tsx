@@ -7,11 +7,11 @@
 //   the resolved max fee, in lythoshi, so Max never over-spends), an honest
 //   USD equivalent (em-dash — there is no on-chain price oracle), and an
 //   optional local note/memo.
-// Step 3 (Review): a read-only summary + the Private (preview) toggle, then
-//   "Authorise and send" launches the OperationsDrawer.
+// Step 3 (Review): a read-only summary, then "Authorise and send" launches
+//   the OperationsDrawer.
 //
 // The send itself is unchanged and real: a live fee preview, an ML-DSA-65
-// signature, and an encrypted-envelope submit, all driven by the drawer.
+// signature, and a plaintext mempool submit, all driven by the drawer.
 // This screen owns input + validation + the wizard; the drawer owns auth +
 // write. The note is a LOCAL label only (shown in the review + drawer) — the
 // native transfer carries no on-chain memo, so it is never put on the wire.
@@ -55,14 +55,6 @@ const USER_HRP = ADDRESS_KIND_HRPS.user;
 // note never leaves the device (it is not part of the signed transaction).
 const MAX_NOTE_LEN = 120;
 
-// PRIVATE (threshold-encrypted) send is a PREVIEW: threshold-encrypted
-// INCLUSION is not live on the chain yet, so an encrypted tx would not
-// confirm. The toggle is rendered OFF + DISABLED so a user can never
-// submit a non-confirming encrypted tx; plaintext (OFF) is the working
-// path. Flipping this constant is a deliberate, gated re-enable once the
-// chain's threshold-inclusion path is live.
-const PRIVATE_SEND_PREVIEW_ENABLED = false;
-
 // Finality posture is fixed by the chain's consensus model (whitepaper
 // §13 / §18): an anchor settles in ~1s, and ML-DSA-65 quantum-attested
 // checkpoints anchor finality against a future quantum adversary. There is
@@ -92,11 +84,6 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
   const [balance, setBalance] = useState<BalanceState>({ kind: "loading" });
   const [validationError, setValidationError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Private (threshold-encrypted) send toggle. Default OFF = plaintext, the
-  // working inclusion path. The ON state would route the encrypted preview
-  // path, but the control is disabled (see PRIVATE_SEND_PREVIEW_ENABLED) so a
-  // user can never submit a non-confirming encrypted tx today.
-  const [privateSend, setPrivateSend] = useState(false);
   // Saved contact name resolved after a pick. Cleared on any manual
   // edit of the recipient field so a stale name never travels with a
   // fresh address.
@@ -276,12 +263,7 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
     const toLabel = recipientName
       ? `${recipientName} (${shortAddr(toBech32m)})`
       : shortAddr(toBech32m);
-    // The encrypted (preview) path is only ever engaged when BOTH the
-    // user toggled it on AND the preview flag is enabled — the toggle is
-    // disabled today, so this resolves to plaintext (false) in shipping
-    // builds. Plaintext is the working inclusion path.
-    const usePrivate = privateSend && PRIVATE_SEND_PREVIEW_ENABLED;
-    const summary = `Send ${amountLyth} LYTH to ${toLabel} on the Monolythium testnet${usePrivate ? " (private / threshold-encrypted preview)" : ""}.`;
+    const summary = `Send ${amountLyth} LYTH to ${toLabel} on the Monolythium testnet.`;
 
     openOperation({
       kind: "send",
@@ -300,12 +282,6 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
         ...(feePreview !== null
           ? [{ k: "Max fee", v: `${feePreview} LYTH`, mono: true }]
           : []),
-        {
-          k: "Privacy",
-          v: usePrivate
-            ? "Private (threshold-encrypted preview)"
-            : "Plaintext (public mempool)",
-        },
         { k: "Finality", v: FINALITY_POSTURE },
       ],
       confirmLabel: "Authorise and send",
@@ -330,9 +306,6 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
             to: toBech32m,
             amountLyth,
             executionUnitLimit: DEFAULT_LIMIT,
-            // DEFAULT plaintext (false). Only true when the user enabled the
-            // (disabled-today) Private preview toggle — see usePrivate above.
-            privatePreview: usePrivate,
           },
         );
         // Best-effort: if the recipient is a saved contact, bump
@@ -411,8 +384,6 @@ export function Send({ selfAddress, openOperation, onClose }: Props) {
             amount={amount.trim()}
             note={note.trim()}
             feePreview={feePreview}
-            privateSend={privateSend}
-            onTogglePrivate={(checked) => setPrivateSend(checked)}
           />
         )}
 
@@ -706,8 +677,6 @@ function ReviewStep({
   amount,
   note,
   feePreview,
-  privateSend,
-  onTogglePrivate,
 }: {
   from: string;
   to: string;
@@ -715,8 +684,6 @@ function ReviewStep({
   amount: string;
   note: string;
   feePreview: string | null;
-  privateSend: boolean;
-  onTogglePrivate: (checked: boolean) => void;
 }) {
   return (
     <>
@@ -729,69 +696,6 @@ function ReviewStep({
       {note && <ReviewRow k="Note (local only)" v={note} />}
       {feePreview !== null && <ReviewRow k="Max fee" v={`${feePreview} LYTH`} mono />}
       <ReviewRow k="Finality" v={FINALITY_POSTURE} />
-
-      {/* Private (threshold-encrypted) send — PREVIEW, default OFF and
-          disabled. Threshold-encrypted inclusion is not live on the chain
-          yet, so an encrypted tx would not confirm. The control stays
-          disabled so a user can never submit a non-confirming encrypted tx;
-          plaintext (OFF) is the working path. */}
-      <div
-        style={{
-          marginTop: 16,
-          padding: "12px 12px",
-          background: "rgba(255,255,255,0.03)",
-          border: "1px solid var(--fg-700)",
-          borderRadius: 10,
-          opacity: PRIVATE_SEND_PREVIEW_ENABLED ? 1 : 0.7,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-          }}
-        >
-          <label
-            htmlFor="mw-private-send"
-            style={{
-              fontSize: 13,
-              color: "var(--fg-200)",
-              fontWeight: 600,
-            }}
-          >
-            Private (preview)
-          </label>
-          <input
-            id="mw-private-send"
-            type="checkbox"
-            role="switch"
-            checked={privateSend && PRIVATE_SEND_PREVIEW_ENABLED}
-            disabled={!PRIVATE_SEND_PREVIEW_ENABLED}
-            onChange={(e) => onTogglePrivate(e.target.checked)}
-            aria-label="Private (threshold-encrypted) send — preview, not yet available"
-            style={{
-              width: 18,
-              height: 18,
-              cursor: PRIVATE_SEND_PREVIEW_ENABLED ? "pointer" : "not-allowed",
-            }}
-          />
-        </div>
-        <p
-          style={{
-            margin: "8px 0 0",
-            fontSize: 11.5,
-            color: "var(--fg-400)",
-            lineHeight: 1.5,
-          }}
-        >
-          Off — your send goes through the public mempool (plaintext), which is
-          the path that confirms today. Threshold-encrypted (private) inclusion
-          is a preview and not live yet, so it stays disabled to avoid sending a
-          transaction that would not confirm.
-        </p>
-      </div>
     </>
   );
 }
