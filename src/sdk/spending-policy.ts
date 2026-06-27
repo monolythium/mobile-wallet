@@ -9,9 +9,9 @@
 // window, and an explicit policy-expiry.
 //
 // Sub-account lifecycle (no dedicated SDK creation/funding precompile — the
-// sub-account is just a fresh PQM-1 keypair the principal controls):
+// sub-account is just a fresh ML-DSA-65 keypair the principal controls):
 //
-//   create  := generateAgentSubAccount() — fresh PQM-1 / ML-DSA-65 keypair.
+//   create  := generateAgentSubAccount() — fresh ML-DSA-65 keypair.
 //   fund    := an ordinary native LYTH transfer (sendLyth) from the principal
 //              to the sub-account address.  (Lives in the Agents screen.)
 //   register:= the on-chain write below.
@@ -22,7 +22,7 @@
 // signature (3309 bytes) over `composeClaimBoundMessage(chainId, args)`.
 // This is a TWO-KEY DANCE:
 //
-//   1. unlock the SUB-ACCOUNT'S PQM-1 key, sign the bound message → 3309-byte
+//   1. unlock the SUB-ACCOUNT'S ML-DSA-65 key, sign the bound message → 3309-byte
 //      sig + 1952-byte pubkey  (signClaimBoundMessage below);
 //   2. the PRINCIPAL signs + submits the OUTER tx via the SDK 0.3.11
 //      PLAINTEXT path (submitSpendingPolicyTx below; mesh_submitTx — the
@@ -64,8 +64,8 @@ import {
   type SpendingPolicyView,
 } from "@monolythium/core-sdk";
 import {
-  generatePqm1Mnemonic,
-  pqm1MnemonicToAddress,
+  generateMnemonic,
+  mnemonicToAddress,
 } from "@monolythium/core-sdk/crypto";
 import { getProvider } from "./client";
 
@@ -118,8 +118,8 @@ export function packPolicyTimeWindow(
 // -----------------------------------------------------------------------------
 
 export interface AgentSubAccount {
-  /** 24-word PQM-1 v1 mnemonic (ML-DSA-65). The principal controls this. */
-  pqm1Mnemonic: string;
+  /** 24-word BIP-39 recovery phrase (ML-DSA-65). The principal controls this. */
+  mnemonic: string;
   /** Typed `mono` bech32m address derived from the mnemonic. */
   addressBech32m: string;
   /** Internal 20-byte address (hex `0x…`) — storage-key form. */
@@ -127,16 +127,16 @@ export interface AgentSubAccount {
 }
 
 /**
- * Mint a fresh agent sub-account: a brand-new PQM-1 / ML-DSA-65 keypair the
+ * Mint a fresh agent sub-account: a brand-new ML-DSA-65 keypair the
  * principal will fund + bind to a spending policy. The caller is responsible
  * for sealing the returned mnemonic (the Agents screen stores it in the OS
  * keychain, biometric-gated) and for zeroizing any transient copy.
  */
 export function generateAgentSubAccount(): AgentSubAccount {
-  const mnemonic = generatePqm1Mnemonic();
-  const addressHex = pqm1MnemonicToAddress(mnemonic);
+  const mnemonic = generateMnemonic();
+  const addressHex = mnemonicToAddress(mnemonic);
   return {
-    pqm1Mnemonic: mnemonic,
+    mnemonic,
     addressHex,
     addressBech32m: addressToTypedBech32("user", addressHex),
   };

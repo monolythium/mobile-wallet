@@ -1,5 +1,5 @@
 // Reveal recovery phrase — password challenge gates the display, then
-// shows the 24-word PQM-1 mnemonic with the standard copy-with-clear
+// shows the 24-word recovery phrase with the standard copy-with-clear
 // affordance. The password path is mandatory (not biometric) so a
 // device thief with a brief unlocked-phone window can't grab the seed.
 
@@ -26,7 +26,7 @@ export function RevealPhrase({ onClose }: Props) {
     setState({ kind: "verifying" });
     try {
       const payload = await unlockViaPassword(password);
-      setState({ kind: "revealed", mnemonic: payload.pqm1Mnemonic });
+      setState({ kind: "revealed", mnemonic: payload.mnemonic });
       setPassword("");
     } catch (cause) {
       const message = (cause as Error)?.message ?? "wrong password";
@@ -78,7 +78,7 @@ export function RevealPhrase({ onClose }: Props) {
                 lineHeight: 1.55,
               }}
             >
-              Confirm your password to display the 24-word PQM-1 phrase
+              Confirm your password to display the 24-word recovery phrase
               for this wallet.
             </p>
             <input

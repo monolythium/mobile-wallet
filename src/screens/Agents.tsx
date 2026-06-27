@@ -1,7 +1,7 @@
 // Agents — agent sub-account spending-policy management (WP §18.8).
 //
 // A principal grants a *sub-account* a bounded spending authority. A
-// sub-account is a fresh PQM-1 / ML-DSA-65 keypair the principal controls; its
+// sub-account is a fresh ML-DSA-65 keypair the principal controls; its
 // secret mnemonic is sealed in the OS keychain (agents-store.ts), its public
 // address is tracked in a local index.
 //
@@ -30,7 +30,7 @@ import {
   type SpendingPolicyArgs,
   type SpendingPolicyView,
 } from "@monolythium/core-sdk";
-import { pqm1MnemonicToMlDsa65Backend } from "@monolythium/core-sdk/crypto";
+import { mnemonicToMlDsa65Backend } from "@monolythium/core-sdk/crypto";
 import type { OperationRequest } from "../components/OperationsDrawer";
 import { Icon } from "../components/Icon";
 import {
@@ -165,14 +165,14 @@ export function Agents({ selfAddress, openOperation }: Props) {
     try {
       sub = generateAgentSubAccount();
       await addAgent({
-        pqm1Mnemonic: sub.pqm1Mnemonic,
+        mnemonic: sub.mnemonic,
         addressHex: sub.addressHex,
         bech32m: sub.addressBech32m,
         label,
       });
       // Show the phrase ONCE so the principal can back it up. The keychain
       // already holds the canonical copy.
-      setNewMnemonic(sub.pqm1Mnemonic);
+      setNewMnemonic(sub.mnemonic);
       setLabelDraft("");
       await refresh();
     } catch (cause) {
@@ -266,8 +266,8 @@ export function Agents({ selfAddress, openOperation }: Props) {
           // message with it, drop the transient backend, then the PRINCIPAL
           // signs + submits the outer tx.
           const subMnemonic = await getAgentMnemonic(agent.addressHex);
-          let subBackend: ReturnType<typeof pqm1MnemonicToMlDsa65Backend> | null =
-            pqm1MnemonicToMlDsa65Backend(subMnemonic);
+          let subBackend: ReturnType<typeof mnemonicToMlDsa65Backend> | null =
+            mnemonicToMlDsa65Backend(subMnemonic);
           const chainId = await readChainId();
           const subPubkey = subBackend.publicKey();
           const subSig = signClaimBoundMessage(subBackend, chainId, args);

@@ -34,8 +34,8 @@ import {
   type MlDsa65Backend,
   type NativeEvmTxFields,
   buildPlaintextSubmission,
-  pqm1MnemonicToMlDsa65Backend,
-  generatePqm1Mnemonic,
+  mnemonicToMlDsa65Backend,
+  generateMnemonic,
 } from "@monolythium/core-sdk/crypto";
 import {
   buildDisablePolicyCalldata,
@@ -103,9 +103,9 @@ function fullArgs(): SpendingPolicyArgs {
   };
 }
 
-/** A valid 1952-byte pubkey + 3309-byte sig from a real PQM-1 backend. */
+/** A valid 1952-byte pubkey + 3309-byte sig from a real ML-DSA-65 backend. */
 function freshClaimMaterial(args: SpendingPolicyArgs) {
-  const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+  const backend = mnemonicToMlDsa65Backend(generateMnemonic());
   const pubkey = backend.publicKey();
   const sig = signClaimBoundMessage(backend, TEST_CHAIN_ID, args);
   return { pubkey, sig };
@@ -273,7 +273,7 @@ describe("buildEnablePolicyCalldata / buildDisablePolicyCalldata", () => {
 describe("signClaimBoundMessage — two-key dance", () => {
   it("the sub-account signature verifies against the bound message", () => {
     const args = fullArgs();
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     const message = composeClaimBoundMessage(TEST_CHAIN_ID, args);
     const sig = signClaimBoundMessage(backend, TEST_CHAIN_ID, args);
     expect(sig.length).toBe(ML_DSA_65_SIGNATURE_LEN);
@@ -282,12 +282,12 @@ describe("signClaimBoundMessage — two-key dance", () => {
 });
 
 describe("generateAgentSubAccount", () => {
-  it("mints a fresh PQM-1 sub-account whose mono bech32m matches its key", () => {
+  it("mints a fresh ML-DSA-65 sub-account whose mono bech32m matches its key", () => {
     const a = generateAgentSubAccount();
-    expect(a.pqm1Mnemonic.split(/\s+/).length).toBe(24);
+    expect(a.mnemonic.split(/\s+/).length).toBe(24);
     expect(a.addressBech32m.startsWith("mono1")).toBe(true);
     // Deriving the backend from the stored mnemonic reproduces the address.
-    const backend = pqm1MnemonicToMlDsa65Backend(a.pqm1Mnemonic);
+    const backend = mnemonicToMlDsa65Backend(a.mnemonic);
     const reBech32m = addressToTypedBech32("user", backend.getAddress());
     expect(reBech32m).toBe(a.addressBech32m);
   });
@@ -319,7 +319,7 @@ describe("submitSpendingPolicyTx — PLAINTEXT write path", () => {
     const observed: CapturedCall[] = [];
     const args = fullArgs();
     const { pubkey, sig } = freshClaimMaterial(args);
-    const backend = pqm1MnemonicToMlDsa65Backend(generatePqm1Mnemonic());
+    const backend = mnemonicToMlDsa65Backend(generateMnemonic());
     const calldata = buildRegisterPolicyCalldata({
       args,
       subAccountPubkey: pubkey,

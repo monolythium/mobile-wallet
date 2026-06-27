@@ -1,5 +1,5 @@
-// PQM-1 vault layer — KDF-derived KEK + on-disk encrypted envelope, with
-// a 24-word PQM-1 mnemonic as the sealed payload. ML-DSA-65 keys are
+// ML-DSA-65 vault layer — KDF-derived KEK + on-disk encrypted envelope, with
+// a 24-word BIP-39 recovery phrase as the sealed payload. ML-DSA-65 keys are
 // derived from the mnemonic on every unlock — the wallet never holds a
 // raw signing key on disk.
 //
@@ -25,10 +25,10 @@
 //   1. Onboarding (`bootstrap`):
 //        device-key  := random(32)
 //        salt        := random(16)
-//        mnemonic    := SDK generatePqm1Mnemonic()
+//        mnemonic    := SDK generateMnemonic()
 //        KEK         := argon2id(password, salt, params)
 //        kekWrap     := AES-GCM(device-key, KEK)
-//        ciphertext  := AES-GCM(KEK, JSON.stringify({ pqm1Mnemonic, address }))
+//        ciphertext  := AES-GCM(KEK, JSON.stringify({ mnemonic, address }))
 //        keystore.set(device-key); disk.write(envelope)
 //
 //   2. Biometric unlock (`unlockWithDeviceKey`):
@@ -48,20 +48,18 @@
 //   Android can spike CPU under heavier params. Re-tune in
 //   `KDF_PARAMS` if profiling shows headroom.
 //
-// PQM-1 algo tag is `0x01` (ML-DSA-65). Import paths MUST verify the
-// algo tag before deriving — non-`0x01` payloads are rejected with a
-// typed error so a wallet built for MlDsa65 doesn't silently accept a
-// future algorithm's mnemonic.
+// Recovery phrases are standard 24-word BIP-39. Import paths validate the
+// phrase (24 words + BIP-39 checksum) before deriving — an invalid phrase
+// is rejected with a typed error so a user pasting a malformed phrase
+// doesn't silently produce a different identity.
 
 import { invoke } from "@tauri-apps/api/core";
 import { argon2idAsync } from "@noble/hashes/argon2.js";
 import {
-  PQM1_ALGO_TAG_MLDSA65,
-  PQM1_VERSION_V1,
-  Pqm1Error,
-  generatePqm1Mnemonic,
-  pqm1MnemonicToAddress,
-  pqm1MnemonicToPayload,
+  MnemonicError,
+  generateMnemonic,
+  mnemonicToAddress,
+  validateMnemonic,
 } from "@monolythium/core-sdk/crypto";
 import { normalizeAddressHex } from "@monolythium/core-sdk";
 
@@ -94,7 +92,7 @@ export const KDF_PARAMS: KdfParams = {
   dkLen: 32,
 };
 
-/** Current vault envelope version. v2 = PQM-1 mnemonic payload. */
+/** Current vault envelope version. v2 = BIP-39 mnemonic payload. */
 export const VAULT_VERSION = 2;
 
 export interface VaultEnvelope {
@@ -106,7 +104,7 @@ export interface VaultEnvelope {
   payloadIv: string; // base64
   payload: string; // base64
   /**
-   * Internal 20-byte address derived from the PQM-1 mnemonic, hex-encoded
+   * Internal 20-byte address derived from the recovery phrase, hex-encoded
    * with `0x` prefix. Surfaced in plaintext so the UI can render the
    * typed `mono1…` identity without triggering a biometric prompt at app
    * boot. The address bytes are public information; the mnemonic stays
@@ -116,7 +114,7 @@ export interface VaultEnvelope {
 }
 
 /**
- * Decrypted vault payload. The 24-word PQM-1 mnemonic sits inside the
+ * Decrypted vault payload. The 24-word recovery phrase sits inside the
  * AES-GCM-sealed payload, never in the clear and never in the keystore —
  * only an unlock flow that derives the right KEK can reveal it. The
  * ML-DSA-65 backend is materialised on demand from the mnemonic and
@@ -125,8 +123,8 @@ export interface VaultEnvelope {
 export interface VaultPayload {
   version: 2;
   createdAt: number; // unix seconds
-  /** 24-word PQM-1 v1 mnemonic with `0x01` algo tag (ML-DSA-65). */
-  pqm1Mnemonic: string;
+  /** 24-word BIP-39 recovery phrase (ML-DSA-65 seed source). */
+  mnemonic: string;
   /** Internal 20-byte address (hex with `0x` prefix). */
   address: string;
 }
@@ -150,11 +148,10 @@ export class VaultIoError extends Error {
 }
 
 /**
- * Mnemonic / algo-tag rejection at the vault layer. Surfaces a clear
- * "this is not a PQM-1 v1 ML-DSA-65 mnemonic" error so a user pasting an
- * unrelated 24-word BIP-39 phrase (a MetaMask export, a Cosmos wallet)
- * doesn't silently produce a different identity. Maps onto the SDK's
- * `Pqm1Error` causes.
+ * Mnemonic rejection at the vault layer. Surfaces a clear "this is not a
+ * valid recovery phrase" error so a user pasting a malformed or truncated
+ * phrase doesn't silently produce a different identity. Maps onto the
+ * SDK's `MnemonicError` causes.
  */
 export class VaultMnemonicError extends Error {
   override readonly cause?: unknown;
@@ -307,47 +304,33 @@ async function deriveKek(password: string, salt: Uint8Array, params: KdfParams):
 
 /**
  * Derive the internal 20-byte address (hex with `0x` prefix) from a
- * PQM-1 v1 ML-DSA-65 mnemonic. Throws `VaultMnemonicError` if the
- * mnemonic decodes to a non-`0x01` algo tag or a non-v1 version —
- * wallets MUST refuse to silently accept a different signature
- * algorithm's seed (whitepaper §21.2.1).
+ * 24-word BIP-39 recovery phrase. Throws `VaultMnemonicError` if the
+ * phrase is not a valid 24-word BIP-39 mnemonic — wallets MUST refuse to
+ * silently accept a malformed or truncated seed.
  */
 export function addressHexFromMnemonic(mnemonic: string): string {
-  // pqm1MnemonicToPayload rejects non-`0x01` algo tags + non-v1 versions
-  // at the SDK layer; we re-throw as VaultMnemonicError so the wallet
-  // UI gets a typed surface for the "this isn't a PQM-1 v1 ML-DSA-65
-  // phrase" error.
-  const payload = (() => {
-    try {
-      return pqm1MnemonicToPayload(mnemonic);
-    } catch (cause) {
-      if (cause instanceof Pqm1Error) {
-        throw new VaultMnemonicError(
-          `mnemonic is not a valid PQM-1 v1 phrase: ${cause.message}`,
-          cause,
-        );
-      }
-      throw cause;
-    }
-  })();
-  // Belt-and-suspenders: assert the type-narrowed fields are what we
-  // expect. The SDK type system already pins these to the v1 literals,
-  // but if a future SDK widens the union, these are the lines that
-  // should refuse to load the legacy material.
-  if (payload.algoTag !== PQM1_ALGO_TAG_MLDSA65) {
+  // validateMnemonic enforces 24 words + the BIP-39 checksum; reject
+  // before deriving so the UI gets a typed "this isn't a valid recovery
+  // phrase" surface rather than a silent different identity.
+  if (!validateMnemonic(mnemonic)) {
     throw new VaultMnemonicError(
-      `mnemonic algo tag is 0x${(payload.algoTag as number).toString(16).padStart(2, "0")}, expected 0x01 (ML-DSA-65)`,
+      "recovery phrase is not a valid 24-word BIP-39 phrase",
     );
   }
-  if (payload.version !== PQM1_VERSION_V1) {
-    throw new VaultMnemonicError(
-      `mnemonic version is ${payload.version as number}, expected ${PQM1_VERSION_V1}`,
-    );
-  }
-  // pqm1MnemonicToAddress returns an already-normalized `0x...` 20-byte
-  // hex string (MlDsa65Backend.getAddress() → bytesToHex). Run it through
+  // mnemonicToAddress returns an already-normalized `0x...` 20-byte hex
+  // string (MlDsa65Backend.getAddress() → bytesToHex). Run it through
   // normalizeAddressHex to lower-case + length-check it.
-  return normalizeAddressHex(pqm1MnemonicToAddress(mnemonic));
+  try {
+    return normalizeAddressHex(mnemonicToAddress(mnemonic));
+  } catch (cause) {
+    if (cause instanceof MnemonicError) {
+      throw new VaultMnemonicError(
+        `recovery phrase is not valid: ${cause.message}`,
+        cause,
+      );
+    }
+    throw cause;
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -390,8 +373,8 @@ async function writeEnvelope(env: VaultEnvelope): Promise<void> {
 
 /**
  * Fresh-install bootstrap. Generates the device-key + salt, derives the
- * KEK, mints a brand-new PQM-1 mnemonic, seals it under the KEK, and
- * persists everything.
+ * KEK, mints a brand-new BIP-39 recovery phrase, seals it under the KEK,
+ * and persists everything.
  *
  * Returns the mnemonic so onboarding can show + verify it before the user
  * lands on the wallet. The caller must `setUnlockSecret(deviceKeyHex)` so
@@ -402,7 +385,7 @@ export interface BootstrapResult {
   deviceKeyHex: string;
   /** The KEK in plain bytes — kept by the caller in memory only, for this session. */
   kek: Uint8Array;
-  /** The freshly-generated PQM-1 v1 mnemonic to be shown + verified. */
+  /** The freshly-generated 24-word recovery phrase to be shown + verified. */
   mnemonic: string;
   /** Internal 20-byte address (hex `0x…`) derived from the mnemonic. */
   address: string;
@@ -421,11 +404,12 @@ export async function bootstrap(
 
   const mnemonic = options.importMnemonic
     ? options.importMnemonic.trim()
-    : generatePqm1Mnemonic();
+    : generateMnemonic();
 
-  // Address derivation also validates algo + version tags. Import paths
-  // surface VaultMnemonicError to the UI so a user pasting an unrelated
-  // BIP-39 phrase gets a precise "not a PQM-1 v1 ML-DSA-65 phrase" hint.
+  // Address derivation also validates the phrase (24 words + BIP-39
+  // checksum). Import paths surface VaultMnemonicError to the UI so a user
+  // pasting a malformed phrase gets a precise "not a valid recovery
+  // phrase" hint.
   const address = addressHexFromMnemonic(mnemonic);
 
   const params = KDF_PARAMS;
@@ -440,7 +424,7 @@ export async function bootstrap(
   const payload: VaultPayload = {
     version: VAULT_VERSION,
     createdAt: Math.floor(Date.now() / 1000),
-    pqm1Mnemonic: mnemonic,
+    mnemonic,
     address,
   };
   const payloadIv = randomBytes(12);

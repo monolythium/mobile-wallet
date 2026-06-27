@@ -41,7 +41,7 @@ const WALLET_ROWS: Row[] = [
     route: "reveal-phrase",
     icon: "key",
     title: "Reveal recovery phrase",
-    subtitle: "24-word PQM-1 phrase · password required",
+    subtitle: "24-word recovery phrase · password required",
   },
   {
     route: "reset-wallet",
