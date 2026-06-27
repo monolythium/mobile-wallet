@@ -2,7 +2,7 @@
  * sendLyth — native PLAINTEXT submit (SDK 0.3.11 default) wire-shape tests.
  *
  * The signing + serialization is exercised at the SDK layer
- * (`buildPlaintextSubmission` / `submitTransactionWithPrivacy`); these
+ * (`buildPlaintextSubmission` / `submitTransaction`); these
  * tests cover the wallet's wrapping responsibilities:
  *   - typed-address validation (no 0x, mono1 only)
  *   - DEFAULT submit path is PLAINTEXT: nonce + chainId reads, then the
@@ -175,7 +175,6 @@ describe("sendLyth — DEFAULT path is PLAINTEXT", () => {
     );
 
     expect(result.txHash).toBe(hash);
-    expect(result.encrypted).toBe(false);
 
     const methods = observed.map((c) => c.method);
     // Reads first (nonce + chainId), then the live fee quote, then the

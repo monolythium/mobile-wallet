@@ -24,9 +24,10 @@
 //
 //   1. unlock the SUB-ACCOUNT'S ML-DSA-65 key, sign the bound message → 3309-byte
 //      sig + 1952-byte pubkey  (signClaimBoundMessage below);
-//   2. the PRINCIPAL signs + submits the OUTER tx via the SDK 0.3.11
-//      PLAINTEXT path (submitSpendingPolicyTx below; mesh_submitTx — the
-//      working inclusion path on the optional-encryption chain).
+//   2. the PRINCIPAL signs + submits the OUTER tx via the SDK PLAINTEXT
+//      path (submitSpendingPolicyTx below; mesh_submitTx — the chain's
+//      sole inclusion path since the v2 re-genesis dropped the encrypted
+//      mempool).
 //
 // A re-claim of an ALREADY-bound sub-account uses `setPolicy` (0x8da1a765),
 // which carries no fresh pubkey/sig. Revoke = `disable` (0xe6c09edf).
@@ -43,7 +44,7 @@
 import {
   type MlDsa65Backend,
   type NativeEvmTxFields,
-  submitTransactionWithPrivacy,
+  submitTransaction,
 } from "@monolythium/core-sdk/crypto";
 import {
   addressToTypedBech32,
@@ -251,7 +252,7 @@ export async function fetchSpendingPolicy(
 }
 
 // -----------------------------------------------------------------------------
-// Write (mirrors the corrected staking.ts encrypted-envelope submit path).
+// Write (mirrors the staking.ts plaintext submit path).
 // -----------------------------------------------------------------------------
 
 export interface SubmitSpendingPolicyTxArgs {
@@ -280,12 +281,12 @@ function bigintToHex(n: bigint): string {
 
 /**
  * Submit a spending-policy precompile call (register / enable / disable). The
- * PRINCIPAL signs + submits the OUTER tx via the SDK 0.3.11 PLAINTEXT path
- * (`submitTransactionWithPrivacy` with `private: false` -> `mesh_submitTx`,
- * with the node-echoed canonical tx hash validated) — the working inclusion
- * path on the optional-encryption chain. `tx.to` is the spending-policy
- * precompile and `tx.value` is 0 (the policy write carries no native value —
- * funding the sub-account is a separate sendLyth).
+ * PRINCIPAL signs + submits the OUTER tx via the SDK PLAINTEXT path
+ * (`submitTransaction` -> `mesh_submitTx`, with the node-echoed canonical tx
+ * hash validated) — the chain's sole inclusion path since the v2 re-genesis
+ * dropped the encrypted mempool. `tx.to` is the spending-policy precompile
+ * and `tx.value` is 0 (the policy write carries no native value — funding
+ * the sub-account is a separate sendLyth).
  *
  * Fees use the SDK's REGISTRY defaults (`resolveRegistryExecutionFee`): the
  * register/claim path carries ~5.3 KB of pubkey+sig and the register_op
@@ -326,14 +327,9 @@ export async function submitSpendingPolicyTx(
   };
 
   const backend = await args.unlockBackend();
-  // Plaintext default (private: false) -> mesh_submitTx, the working
-  // inclusion path; returns the validated canonical native tx hash.
-  const txHash = await submitTransactionWithPrivacy({
-    client: rpc,
-    backend,
-    tx,
-    private: false,
-  });
+  // Plaintext mesh_submitTx — the chain's sole inclusion path; returns the
+  // validated canonical native tx hash.
+  const txHash = await submitTransaction({ client: rpc, backend, tx });
   return { txHash };
 }
 

@@ -1,28 +1,19 @@
-// Native Send-LYTH composer (post-EVM, optional-encryption chain).
+// Native Send-LYTH composer (post-EVM, plaintext mempool).
 //
-// DEFAULT submit path is PLAINTEXT — the working inclusion path on the
-// live optional-encryption chain (`encrypted_mempool_required = false`).
-// Stages of a real plaintext send:
+// The submit path is PLAINTEXT — the sole inclusion path since the v2
+// re-genesis dropped the encrypted (LythiumSeal) mempool. Stages of a
+// real send:
 //   1. read sender nonce + chain id from the RpcClient (no key access);
 //   2. resolve sane per-unit fee defaults from the live
 //      `lyth_executionUnitPrice` quote (SDK `resolveExecutionFee`, which
 //      clamps the priority tip <= max execution-unit price so the
-//      plaintext path never reverts with FeeMismatch);
+//      send never reverts with FeeMismatch);
 //   3. unlock the vault via the supplied backend factory (biometric or
 //      password) and produce a fresh `MlDsa65Backend`;
-//   4. ask the SDK's `submitTransactionWithPrivacy({ private: false })`
-//      to build the chain-side `SignedTransaction`, ML-DSA-65 sign over
-//      the canonical sighash, bincode-serialize, and POST it through
+//   4. ask the SDK's `submitTransaction({ client, backend, tx })` to build
+//      the chain-side `SignedTransaction`, ML-DSA-65 sign over the
+//      canonical sighash, bincode-serialize, and POST it through
 //      `mesh_submitTx` (validating the node-echoed canonical tx hash).
-//
-// The PRIVATE (threshold-encrypted) path is a PREVIEW only. Passing
-// `privatePreview: true` routes through `submitTransactionWithPrivacy(
-// { private: true })` — the Ferveo encrypt-then-`lyth_submitEncrypted`
-// pipeline — but threshold-encrypted INCLUSION is NOT live on the chain
-// yet, so an encrypted tx will not confirm. The Send screen keeps the
-// "Private" toggle default-OFF and disabled (preview copy) precisely so a
-// user can never submit a non-confirming encrypted tx. Plaintext (OFF)
-// is the only working path today.
 
 import {
   LYTHOSHI_PER_LYTH,
@@ -33,11 +24,9 @@ import {
   typedBech32ToAddress,
 } from "@monolythium/core-sdk";
 import {
-  type EncryptionKey,
-  type MempoolClass,
   type MlDsa65Backend,
   type NativeEvmTxFields,
-  submitTransactionWithPrivacy,
+  submitTransaction,
 } from "@monolythium/core-sdk/crypto";
 import { getProvider } from "./client";
 import { nextSendNonce, recordSubmittedNonce } from "./pending-nonce";
@@ -62,19 +51,6 @@ export interface SendLythArgs {
   chainId?: bigint;
   /** Optional hex data payload; most plain transfers leave this empty. */
   data?: string;
-  /**
-   * Privacy toggle. DEFAULT (false / omitted) = PLAINTEXT via
-   * `mesh_submitTx` — the working inclusion path. `true` routes through
-   * the threshold-encrypted (Ferveo) path, which is a PREVIEW: encrypted
-   * inclusion is not live yet, so an encrypted tx will not confirm. The
-   * Send screen gates this OFF + disabled.
-   */
-  privatePreview?: boolean;
-  /**
-   * Mempool class override. Only consulted on the encrypted (preview)
-   * path. User sends never want this; leave undefined.
-   */
-  mempoolClass?: MempoolClass;
 }
 
 export interface SendLythResult {
@@ -84,8 +60,6 @@ export interface SendLythResult {
   chainId: bigint;
   /** Effective amount sent (lythoshi). */
   amountLythoshi: bigint;
-  /** True when the encrypted (preview) path was used. */
-  encrypted: boolean;
 }
 
 export interface SendLythBackends {
@@ -100,11 +74,10 @@ function bigintToHex(n: bigint): string {
 
 /**
  * Compose a real Send LYTH against the live testnet via the SDK
- * RpcClient. DEFAULT path is PLAINTEXT (`submitTransactionWithPrivacy`
- * with `private: false`) — what actually confirms on the
- * optional-encryption chain. Throws on any wire-level failure so the
- * OperationsDrawer can promote the drawer to its `done` stage with an
- * error.
+ * RpcClient. The path is PLAINTEXT (`submitTransaction`) — the chain's
+ * sole inclusion path since the v2 re-genesis dropped the encrypted
+ * mempool. Throws on any wire-level failure so the OperationsDrawer can
+ * promote the drawer to its `done` stage with an error.
  */
 export async function sendLyth(
   backends: SendLythBackends,
@@ -136,23 +109,7 @@ export async function sendLyth(
       args.executionUnitLimit ?? TRANSFER_DEFAULT_EXECUTION_UNIT_LIMIT,
   });
 
-  const isPrivate = args.privatePreview === true;
-
-  // 3. Encryption key — only needed for the encrypted (preview) path.
-  let encryptionKey: EncryptionKey | undefined;
-  if (isPrivate) {
-    const encryptionKeyRes = await rpc.lythGetEncryptionKey();
-    encryptionKey = {
-      algo: encryptionKeyRes.algo,
-      epoch:
-        typeof encryptionKeyRes.epoch === "bigint"
-          ? encryptionKeyRes.epoch
-          : BigInt(encryptionKeyRes.epoch as unknown as string | number),
-      encapsulationKey: hexStringToBytes(encryptionKeyRes.encapsulationKey),
-    };
-  }
-
-  // 4. Unlock the vault for one signing op. The backend drops out of
+  // 3. Unlock the vault for one signing op. The backend drops out of
   //    scope when the function returns.
   const backend = await backends.unlockBackend();
 
@@ -167,16 +124,9 @@ export async function sendLyth(
     input: args.data ?? "0x",
   };
 
-  // 5. Submit. DEFAULT private:false -> plaintext mesh_submitTx (validated
-  //    node-echoed canonical hash). private:true -> encrypted (preview).
-  const txHash = await submitTransactionWithPrivacy({
-    client: rpc,
-    backend,
-    tx,
-    private: isPrivate,
-    ...(encryptionKey !== undefined ? { encryptionKey } : {}),
-    ...(args.mempoolClass !== undefined ? { class: args.mempoolClass } : {}),
-  });
+  // 4. Build, sign, and submit through the plaintext `mesh_submitTx` path
+  //    (the node-echoed canonical hash is validated by the SDK).
+  const txHash = await submitTransaction({ client: rpc, backend, tx });
   // Success — advance the local pending nonce so the next submit won't reuse it.
   recordSubmittedNonce(fromHex, chainId, nonce);
 
@@ -184,7 +134,6 @@ export async function sendLyth(
     txHash,
     chainId,
     amountLythoshi,
-    encrypted: isPrivate,
   };
 }
 
@@ -222,16 +171,4 @@ function requireTypedUserAddressHex(address: string, label: string): string {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`${label} must be a typed mono1 address: ${message}`);
   }
-}
-
-function hexStringToBytes(s: string): Uint8Array {
-  const stripped = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
-  if (stripped.length % 2 !== 0) throw new Error("hex must have even length");
-  const out = new Uint8Array(stripped.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    const b = Number.parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
-    if (Number.isNaN(b)) throw new Error("invalid hex byte");
-    out[i] = b;
-  }
-  return out;
 }

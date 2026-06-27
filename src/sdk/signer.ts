@@ -1,10 +1,11 @@
 // Wallet-side signer for the mobile wallet (post-EVM, ML-DSA-65).
 //
 // The signing primitive is `MlDsa65Backend` from `@monolythium/core-sdk`.
-// Native tx submission goes through `buildEncryptedSubmission` (in
+// Native tx submission goes through the SDK's `submitTransaction` (in
 // `send.ts`), which takes the backend, builds the inner native tx,
-// produces the ML-DSA-65 outer signature, ML-KEM-encrypts the envelope,
-// and returns wire-ready hex.
+// produces the ML-DSA-65 signature over the canonical sighash,
+// bincode-serializes the SignedTransaction, and POSTs it plaintext
+// through `mesh_submitTx`.
 //
 // Two backends ship today:
 //
