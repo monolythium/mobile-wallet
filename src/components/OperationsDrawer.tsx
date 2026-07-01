@@ -46,7 +46,7 @@ export interface OperationRequest {
   details: OperationKeyValue[];
   confirmLabel?: string;
   /** Returns the on-chain hash (or another receipt id) after the auth gate. */
-  execute?: () => Promise<string>;
+  execute: () => Promise<string>;
   /** Optional structured metadata for the in-app notifications center. When
    *  present AND the experimental surface is enabled, a successful
    *  `execute()` ENQUEUES the tx into the durable tracked-tx registry; the
@@ -145,16 +145,13 @@ export function OperationsDrawer({ request, onClose }: Props) {
     };
   }, [state, request]);
 
-  // executing -> done transition runs the request's execute() if present,
-  // otherwise mocks a hash so the UI flow is exercised end-to-end.
+  // executing -> done transition runs the request's execute().
   useEffect(() => {
     if (state !== "executing" || !request) return;
     let cancelled = false;
     const run = async () => {
       try {
-        const txHash = request.execute
-          ? await request.execute()
-          : await mockExecute();
+        const txHash = await request.execute();
         if (cancelled) return;
         setReceipt(txHash);
         setState("done");
@@ -465,13 +462,6 @@ function sensorLabelFor(bio: BiometricStatus | null): string {
     default:
       return "biometric";
   }
-}
-
-async function mockExecute(): Promise<string> {
-  await new Promise((res) => setTimeout(res, 900));
-  // 32-byte zero-padded synthetic hash so the UI can render something
-  // until Stage 3 replaces this with rpc.ethSendRawTransaction(...).
-  return `0x${"0".repeat(60)}demo`;
 }
 
 /** Resolve the broadcast-time chain id, then enqueue the tx into the durable

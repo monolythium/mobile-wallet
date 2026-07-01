@@ -56,10 +56,14 @@ function effectiveEndpoint(): string {
   return _override ?? defaultEndpoint();
 }
 
+/** Client-version header, derived from the app version at build time so it
+ *  can't drift from the shipped release (see vite.config.ts). */
+const CLIENT_VERSION_HEADER = `monolythium-wallet-mobile/${__MONO_WALLET_VERSION__}`;
+
 function buildClient(): RpcClient {
   return new RpcClient(effectiveEndpoint(), {
     headers: {
-      "x-mono-client": "monolythium-wallet-mobile/0.1.2",
+      "x-mono-client": CLIENT_VERSION_HEADER,
     },
     ..._clientOptions,
   });

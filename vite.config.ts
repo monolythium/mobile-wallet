@@ -1,6 +1,14 @@
 /// <reference types="vitest" />
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+
+// Single-source the app version from package.json so build-time constants
+// (e.g. the x-mono-client request header) can't drift from the release.
+const pkg = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8"),
+) as { version: string };
 
 // Tauri 2 mobile expects the dev server reachable from the device/simulator.
 // `host: '0.0.0.0'` lets `tauri ios dev` / `tauri android dev` proxy in.
@@ -8,6 +16,9 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => ({
   plugins: [react()],
   clearScreen: false,
+  define: {
+    __MONO_WALLET_VERSION__: JSON.stringify(pkg.version),
+  },
   server: {
     host: "0.0.0.0",
     port: 1420,
