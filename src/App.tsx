@@ -208,6 +208,10 @@ export default function App() {
               : []),
           ],
           confirmLabel: "Sign and send",
+          execute: () =>
+            Promise.reject(
+              new Error("External send requests are not supported yet."),
+            ),
         });
         break;
       }
@@ -227,6 +231,10 @@ export default function App() {
               : []),
           ],
           confirmLabel: "Review stake",
+          execute: () =>
+            Promise.reject(
+              new Error("External staking requests are not supported yet."),
+            ),
         });
         break;
       }
@@ -241,6 +249,10 @@ export default function App() {
             { k: "Message", v: shortHex(action.message), mono: true },
           ],
           confirmLabel: "Sign",
+          execute: () =>
+            Promise.reject(
+              new Error("External message signing is not supported yet."),
+            ),
         });
         break;
       }
@@ -262,6 +274,10 @@ export default function App() {
             { k: "Payload", v: preview, mono: true },
           ],
           confirmLabel: "Sign typed data",
+          execute: () =>
+            Promise.reject(
+              new Error("External typed-data signing is not supported yet."),
+            ),
         });
         break;
       }
