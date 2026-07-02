@@ -15,9 +15,14 @@ vi.mock("../peers", async (importOriginal) => {
 });
 
 // Stub the SDK's genesis-verified operator selection so init never hits the
-// network. Default (set in beforeEach) is a rejection → the fail-soft path
-// keeps the shipped default.
+// network. `selectSpy` backs the bundled-snapshot fallback path
+// (selectTrustedOperatorForNetwork); `selectLiveSpy` backs the live-registry
+// path (selectTrustedOperator). Default (set in beforeEach) is a rejection →
+// the fail-soft path keeps the shipped default.
 const selectSpy = vi.hoisted(() =>
+  vi.fn<() => Promise<{ endpoint: string }>>(),
+);
+const selectLiveSpy = vi.hoisted(() =>
   vi.fn<() => Promise<{ endpoint: string }>>(),
 );
 vi.mock("@monolythium/core-sdk", async (importOriginal) => {
@@ -25,8 +30,19 @@ vi.mock("@monolythium/core-sdk", async (importOriginal) => {
   return {
     ...actual,
     selectTrustedOperatorForNetwork: selectSpy,
+    selectTrustedOperator: selectLiveSpy,
   };
 });
+
+// Stub the live chain-registry fetch so the boot probe never hits GitHub.
+// Default (set in beforeEach) is `null` → offline → the probe degrades to the
+// bundled-snapshot path (selectTrustedOperatorForNetwork).
+const liveRegistrySpy = vi.hoisted(() =>
+  vi.fn<() => Promise<unknown>>(),
+);
+vi.mock("../live-registry", () => ({
+  fetchLiveTestnetRegistry: liveRegistrySpy,
+}));
 
 import {
   currentEndpoint,
@@ -43,6 +59,9 @@ beforeEach(() => {
   writeSpy.mockReset().mockResolvedValue(undefined);
   // Default: no trusted operator → fail-soft to the shipped default.
   selectSpy.mockReset().mockRejectedValue(new Error("no trusted operator"));
+  selectLiveSpy.mockReset().mockRejectedValue(new Error("no trusted operator"));
+  // Default: live registry unreachable → probe degrades to the bundled path.
+  liveRegistrySpy.mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -65,6 +84,32 @@ describe("client endpoint switching", () => {
     expect(getProvider().rpcClient.endpoint).toBe(
       "http://verified.example:8545",
     );
+  });
+
+  it("verifies against the live registry when it is reachable", async () => {
+    // Live registry reachable → the probe must verify against it (not the
+    // bundled snapshot), so a stale build still checks the current genesis.
+    liveRegistrySpy.mockResolvedValue({ network: "testnet-69420" });
+    selectLiveSpy.mockResolvedValue({ endpoint: "http://live-verified.example:8545" });
+    await initEndpoint();
+    expect(selectLiveSpy).toHaveBeenCalledOnce();
+    expect(selectSpy).not.toHaveBeenCalled(); // bundled fallback not used
+    expect(currentEndpoint()).toBe("http://live-verified.example:8545");
+  });
+
+  it("rejects on a genesis mismatch and logs it instead of silently falling back", async () => {
+    const before = currentEndpoint();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Live registry reachable, but every operator fails the genesis check.
+    liveRegistrySpy.mockResolvedValue({ network: "testnet-69420" });
+    selectLiveSpy.mockRejectedValue(new Error("no trusted operator (regenesis)"));
+
+    await initEndpoint();
+
+    expect(selectLiveSpy).toHaveBeenCalledOnce();
+    expect(currentEndpoint()).toBe(before); // fail-closed to shipped default
+    expect(warn).toHaveBeenCalled(); // the failure is observable, not silent
+    warn.mockRestore();
   });
 
   it("respects a persisted user choice without auto-overriding it", async () => {

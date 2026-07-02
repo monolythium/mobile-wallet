@@ -14,9 +14,11 @@ import {
   RpcClient,
   SdkError,
   getRpcEndpoints,
+  selectTrustedOperator,
   selectTrustedOperatorForNetwork,
   type RpcClientOptions,
 } from "@monolythium/core-sdk";
+import { fetchLiveTestnetRegistry } from "./live-registry";
 import {
   listPeers,
   readSelectedEndpoint,
@@ -140,7 +142,7 @@ export async function initEndpoint(): Promise<void> {
   // each launch; an explicit setEndpoint() still wins and persists.
   try {
     const trusted = await Promise.race([
-      selectTrustedOperatorForNetwork("testnet-69420", _clientOptions),
+      selectGenesisVerifiedOperator(),
       new Promise<never>((_, reject) =>
         setTimeout(
           () => reject(new Error("operator-trust probe timed out")),
@@ -153,10 +155,40 @@ export async function initEndpoint(): Promise<void> {
       _client = buildClient();
       emitEndpoint();
     }
-  } catch {
+    // Observable success: the fail-closed probe actually selected a
+    // genesis-verified operator this launch (see the boot log to confirm the
+    // defense is live rather than silently no-oping).
+    console.info(
+      `[trust] genesis-verified operator selected: ${trusted.endpoint}`,
+    );
+  } catch (err) {
     // OperatorTrustError (all untrusted / offline / quarantined) or timeout →
     // keep the shipped default. Degraded state surfaces via the live reads.
+    // Log it so a wholesale probe failure is observable instead of invisible.
+    console.warn(
+      `[trust] no genesis-verified operator; keeping shipped default ${before}`,
+      err,
+    );
   }
+}
+
+/**
+ * Pick a genesis-verified operator, preferring the LIVE chain-registry pins
+ * over the SDK-bundled snapshot. This is what keeps the orphan-fork defense
+ * meaningful on a chain that can re-genesis: a wallet build pinned to an older
+ * SDK snapshot would otherwise reject every live operator as a "regenesis
+ * mismatch" and silently fall back to a hardcoded endpoint (unverified). By
+ * verifying against the live registry's genesis pin, a stale build still
+ * fail-closes correctly; only when the live registry is unreachable (offline)
+ * do we degrade to stale-pin verification against the bundled snapshot —
+ * never to silently-unverified.
+ */
+async function selectGenesisVerifiedOperator(): Promise<RpcClient> {
+  const live = await fetchLiveTestnetRegistry();
+  if (live) {
+    return selectTrustedOperator(live, _clientOptions);
+  }
+  return selectTrustedOperatorForNetwork("testnet-69420", _clientOptions);
 }
 
 /**
