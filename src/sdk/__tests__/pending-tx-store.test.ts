@@ -9,6 +9,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const backing = vi.hoisted(() => new Map<string, Map<string, unknown>>());
+const scopeState = vi.hoisted(() => ({
+  resolved: {
+    id: "testnet-69420:69420:0xgenesis-a",
+    source: "live" as "live" | "bundled",
+  },
+}));
+
+vi.mock("../persistence-scope", () => ({
+  resolvePersistenceScope: async () => scopeState.resolved,
+  parsePersistenceScopeEnvelope: (input: unknown) => {
+    if (typeof input !== "object" || input === null) return null;
+    const value = input as Record<string, unknown>;
+    if (value.schemaVersion !== 0 || typeof value.id !== "string") return null;
+    return { schemaVersion: 0, id: value.id };
+  },
+  selectPersistenceScopeId: (
+    resolved: { id: string; source: "live" | "bundled" },
+    persisted: { id: string } | null,
+  ) =>
+    resolved.source === "bundled" && persisted
+      ? persisted.id
+      : resolved.id,
+}));
 
 vi.mock("@tauri-apps/plugin-store", () => {
   class MockStore {
@@ -51,6 +74,10 @@ function entry(n: number, over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   backing.clear();
+  scopeState.resolved = {
+    id: "testnet-69420:69420:0xgenesis-a",
+    source: "live",
+  };
   vi.resetModules();
 });
 
@@ -113,6 +140,42 @@ describe("pending-tx store", () => {
     expect(m2.pendingTxsSnapshot().map((e) => e.txHash)).toEqual([entry(1).txHash]);
   });
 
+  it("clears a legacy unscoped registry once instead of polling old hashes", async () => {
+    backing.set(
+      "pending-tx.v1.json",
+      new Map([["pending", { schemaVersion: 0, entries: [entry(1)] }]]),
+    );
+
+    const m = await loadModule();
+    await m.hydratePendingTxs();
+
+    expect(m.pendingTxsSnapshot()).toEqual([]);
+    expect(backing.get("pending-tx.v1.json")?.get("networkScope")).toEqual({
+      schemaVersion: 0,
+      id: scopeState.resolved.id,
+    });
+    expect(backing.get("pending-tx.v1.json")?.get("pending")).toEqual({
+      schemaVersion: 0,
+      entries: [],
+    });
+  });
+
+  it("drops tracked txs when the canonical genesis changes", async () => {
+    const m = await loadModule();
+    await m.enqueuePendingTx(entry(1));
+    expect(m.pendingTxsSnapshot()).toHaveLength(1);
+
+    scopeState.resolved = {
+      id: "testnet-69420:69420:0xgenesis-b",
+      source: "live",
+    };
+    expect(await m.listPendingTxs()).toEqual([]);
+    expect(backing.get("pending-tx.v1.json")?.get("networkScope")).toEqual({
+      schemaVersion: 0,
+      id: scopeState.resolved.id,
+    });
+  });
+
   it("notifies subscribers on enqueue and on remove", async () => {
     const m = await loadModule();
     const listener = vi.fn();
@@ -136,7 +199,16 @@ describe("pending-tx store", () => {
     // merge, not overwrite.
     backing.set(
       "pending-tx.v1.json",
-      new Map([["pending", { schemaVersion: 0, entries: [entry(1)] }]]),
+      new Map([
+        [
+          "networkScope",
+          {
+            schemaVersion: 0,
+            id: scopeState.resolved.id,
+          },
+        ],
+        ["pending", { schemaVersion: 0, entries: [entry(1)] }],
+      ]),
     );
     const m = await loadModule();
     await m.enqueuePendingTx(entry(2));

@@ -9,6 +9,10 @@
 // Schema (file `notifications.v1.json`):
 //
 //   {
+//     "networkScope": {
+//       "schemaVersion": 0,
+//       "id": "testnet-69420:69420:<genesis hash>"
+//     },
 //     "history":  { "schemaVersion": 0, "entries": NotificationRecord[] },
 //     "notified": { "schemaVersion": 0, "ids": string[] }
 //   }
@@ -16,7 +20,9 @@
 // The mobile wallet binds a single vault address at a time, so — unlike the
 // browser wallet's per-(address, chain) keys — history + dedupe live in one
 // global file. The dedupe id still embeds `chainIdHex` (`notificationId`),
-// so the same tx hash on two chains is two distinct records.
+// while the store-level scope embeds the canonical genesis. History and the
+// notified-id watermark are cleared together on a re-genesis. A legacy file
+// without a scope is cleared once and stamped.
 //
 // Recording is the ONLY write path that creates a record, and it is called
 // from exactly one chokepoint (the OperationsDrawer terminal transition).
@@ -35,15 +41,20 @@ import {
   type NotificationRecord,
   type TxOpKind,
 } from "./notifications";
+import {
+  parsePersistenceScopeEnvelope,
+  resolvePersistenceScope,
+  selectPersistenceScopeId,
+} from "./persistence-scope";
 
 const STORE_FILE = "notifications.v1.json";
 const HISTORY_KEY = "history" as const;
 const NOTIFIED_KEY = "notified" as const;
+const NETWORK_SCOPE_KEY = "networkScope" as const;
 
 // In-memory cache of the history, newest-first. Synchronous reads (render
 // paths) consult this; `hydrateNotifications()` refreshes it from disk.
 let historyCache: NotificationRecord[] = [];
-let hydrated = false;
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -69,6 +80,28 @@ async function getStore(): Promise<Store> {
   return storePromise;
 }
 
+/** Ensure history + dedupe watermark belong to the canonical genesis before
+ *  any read/write. Missing/mismatched scopes are cleared and stamped
+ *  fail-closed. An existing live-derived stamp wins during a transient
+ *  registry outage instead of being overwritten by a stale bundled pin. */
+async function ensureNetworkScope(store: Store): Promise<void> {
+  const persisted = parsePersistenceScopeEnvelope(
+    await store.get<unknown>(NETWORK_SCOPE_KEY),
+  );
+  const resolved = await resolvePersistenceScope();
+  const targetId = selectPersistenceScopeId(resolved, persisted);
+  if (persisted?.id === targetId) return;
+
+  await store.set(HISTORY_KEY, { schemaVersion: 0, entries: [] });
+  await store.set(NOTIFIED_KEY, { schemaVersion: 0, ids: [] });
+  await store.set(NETWORK_SCOPE_KEY, { schemaVersion: 0, id: targetId });
+  await store.save();
+
+  const changed = historyCache.length !== 0;
+  historyCache = [];
+  if (changed) emit();
+}
+
 /** Synchronous, render-safe read of the cached feed (newest-first). Empty
  *  before hydration. */
 export function notificationsSnapshot(): NotificationRecord[] {
@@ -82,21 +115,21 @@ export function unreadCountSnapshot(): number {
   return n;
 }
 
-/** Load the persisted history into the cache (call once on mount, and after
- *  any write). Falls back to an empty feed if the store is unreadable (e.g.
- *  desktop dev hosts without a store surface) so the app degrades to master
- *  behaviour. Idempotent emit: only notifies when the cache actually
- *  changed. */
+/** Load the persisted history into the cache. Safe to call repeatedly: each
+ *  read first checks the canonical genesis scope. Falls back to an empty
+ *  feed if the store is unreadable (e.g. desktop dev hosts without a store
+ *  surface) so the app degrades to master behaviour. Idempotent emit: only
+ *  notifies when the cache actually changed. */
 export async function hydrateNotifications(): Promise<void> {
   let next: NotificationRecord[] = [];
   try {
     const store = await getStore();
+    await ensureNetworkScope(store);
     const env = parseHistoryEnvelope(await store.get<unknown>(HISTORY_KEY));
     next = env?.entries ?? [];
   } catch {
     // Keep the empty default.
   }
-  hydrated = true;
   if (!sameFeed(historyCache, next)) {
     historyCache = next;
     emit();
@@ -137,6 +170,7 @@ export async function recordNotification(
 ): Promise<{ added: boolean; record: NotificationRecord | null }> {
   try {
     const store = await getStore();
+    await ensureNetworkScope(store);
     const id = notificationId(input.chainIdHex, input.txHash);
 
     const seen = parseNotifiedSetEnvelope(
@@ -181,11 +215,12 @@ export async function recordNotification(
   }
 }
 
-/** Read of the notification history, newest-first. Hydrates the cache on
- *  first call so the synchronous snapshot is warm. Empty on parse failure /
- *  missing key. */
+/** Read of the notification history, newest-first. Refreshes the cache and
+ *  its genesis scope. Empty on parse failure / missing key. */
 export async function listNotifications(): Promise<NotificationRecord[]> {
-  if (!hydrated) await hydrateNotifications();
+  // Re-check even after hydration so a canonical registry change observed
+  // during a long-running app session drops stale history/watermarks.
+  await hydrateNotifications();
   return historyCache;
 }
 
@@ -195,6 +230,7 @@ export async function listNotifications(): Promise<NotificationRecord[]> {
 export async function markAllNotificationsRead(): Promise<{ flipped: number }> {
   try {
     const store = await getStore();
+    await ensureNetworkScope(store);
     const env = parseHistoryEnvelope(await store.get<unknown>(HISTORY_KEY));
     if (!env) {
       // Nothing persisted; reconcile the cache to empty if it drifted.
@@ -231,6 +267,7 @@ export async function markNotificationRead(
 ): Promise<{ flipped: boolean }> {
   try {
     const store = await getStore();
+    await ensureNetworkScope(store);
     const env = parseHistoryEnvelope(await store.get<unknown>(HISTORY_KEY));
     if (!env) return { flipped: false };
     let flipped = false;
@@ -256,6 +293,7 @@ export async function markNotificationRead(
 export async function getUnreadCount(): Promise<number> {
   try {
     const store = await getStore();
+    await ensureNetworkScope(store);
     const env = parseHistoryEnvelope(await store.get<unknown>(HISTORY_KEY));
     if (!env) return 0;
     let total = 0;
@@ -270,7 +308,6 @@ export async function getUnreadCount(): Promise<number> {
  *  Production code never calls this. */
 export function resetNotificationsForTest(): void {
   historyCache = [];
-  hydrated = false;
   storePromise = null;
   listeners.clear();
 }
