@@ -10,6 +10,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const backing = vi.hoisted(() => new Map<string, Map<string, unknown>>());
 // When set, the next mocked store op throws — exercises the swallow paths.
 const failNext = vi.hoisted(() => ({ value: false }));
+const scopeState = vi.hoisted(() => ({
+  resolved: {
+    id: "testnet-69420:69420:0xgenesis-a",
+    source: "live" as "live" | "bundled",
+  },
+}));
+
+vi.mock("../persistence-scope", () => ({
+  resolvePersistenceScope: async () => scopeState.resolved,
+  parsePersistenceScopeEnvelope: (input: unknown) => {
+    if (typeof input !== "object" || input === null) return null;
+    const value = input as Record<string, unknown>;
+    if (value.schemaVersion !== 0 || typeof value.id !== "string") return null;
+    return { schemaVersion: 0, id: value.id };
+  },
+  selectPersistenceScopeId: (
+    resolved: { id: string; source: "live" | "bundled" },
+    persisted: { id: string } | null,
+  ) =>
+    resolved.source === "bundled" && persisted
+      ? persisted.id
+      : resolved.id,
+}));
 
 vi.mock("@tauri-apps/plugin-store", () => {
   class MockStore {
@@ -60,6 +83,10 @@ function input(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   backing.clear();
   failNext.value = false;
+  scopeState.resolved = {
+    id: "testnet-69420:69420:0xgenesis-a",
+    source: "live",
+  };
   vi.resetModules();
 });
 
@@ -186,6 +213,65 @@ describe("hydrate + subscribe", () => {
     expect(m2.notificationsSnapshot()).toHaveLength(0); // cold cache
     await m2.hydrateNotifications();
     expect(m2.notificationsSnapshot()).toHaveLength(1); // restored from disk
+  });
+
+  it("clears legacy history + dedupe watermark once and stamps the genesis", async () => {
+    backing.set(
+      "notifications.v1.json",
+      new Map([
+        [
+          "history",
+          {
+            schemaVersion: 0,
+            entries: [
+              {
+                id: "0x10f2c:0xold",
+                txHash: "0xold",
+                status: "confirmed",
+                blockNumber: 5,
+                kind: "send",
+                amountDecimal: "1",
+                counterparty: "0x" + "11".repeat(20),
+                createdAtMs: 1,
+                read: false,
+                schemaVersion: 0,
+              },
+            ],
+          },
+        ],
+        ["notified", { schemaVersion: 0, ids: ["0x10f2c:0xold"] }],
+      ]),
+    );
+
+    const m = await loadModule();
+    await m.hydrateNotifications();
+
+    expect(m.notificationsSnapshot()).toEqual([]);
+    const store = backing.get("notifications.v1.json");
+    expect(store?.get("history")).toEqual({ schemaVersion: 0, entries: [] });
+    expect(store?.get("notified")).toEqual({ schemaVersion: 0, ids: [] });
+    expect(store?.get("networkScope")).toEqual({
+      schemaVersion: 0,
+      id: scopeState.resolved.id,
+    });
+  });
+
+  it("clears history + dedupe watermark when canonical genesis changes", async () => {
+    const m = await loadModule();
+    await m.recordNotification(input());
+    expect(m.notificationsSnapshot()).toHaveLength(1);
+
+    scopeState.resolved = {
+      id: "testnet-69420:69420:0xgenesis-b",
+      source: "live",
+    };
+    expect(await m.listNotifications()).toEqual([]);
+    const store = backing.get("notifications.v1.json");
+    expect(store?.get("notified")).toEqual({ schemaVersion: 0, ids: [] });
+    expect(store?.get("networkScope")).toEqual({
+      schemaVersion: 0,
+      id: scopeState.resolved.id,
+    });
   });
 
   it("notifies subscribers on record + mark-all-read", async () => {

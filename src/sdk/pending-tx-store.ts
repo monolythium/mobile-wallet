@@ -10,12 +10,20 @@
 //
 // Schema (file `pending-tx.v1.json`):
 //
-//   { "pending": { "schemaVersion": 0, "entries": PendingTx[] } }
+//   {
+//     "networkScope": {
+//       "schemaVersion": 0,
+//       "id": "testnet-69420:69420:<genesis hash>"
+//     },
+//     "pending": { "schemaVersion": 0, "entries": PendingTx[] }
+//   }
 //
 // The mobile wallet binds a single vault address at a time, so — like the
 // notifications store — the registry lives in one global file. The entry's
-// dedupe key still embeds `chainIdHex` (`pendingTxKey`), so the same tx hash
-// on two chains is two distinct tracked txs.
+// dedupe key still embeds `chainIdHex` (`pendingTxKey`), while the store-level
+// network scope embeds the canonical genesis. A testnet re-genesis therefore
+// clears old tracked txs before the poller can query their hashes on the new
+// chain. A legacy file without a scope is cleared once and stamped.
 //
 // Persistence is the whole point: an entry written here survives the
 // OperationsDrawer being dismissed AND a full app restart, so the app-level
@@ -31,15 +39,20 @@ import {
   removePendingByKeys,
   type PendingTx,
 } from "./pending-tx";
+import {
+  parsePersistenceScopeEnvelope,
+  resolvePersistenceScope,
+  selectPersistenceScopeId,
+} from "./persistence-scope";
 
 const STORE_FILE = "pending-tx.v1.json";
 const PENDING_KEY = "pending" as const;
+const NETWORK_SCOPE_KEY = "networkScope" as const;
 
 // In-memory cache of the registry, newest-first. Synchronous reads (the
 // poller's gate, render paths) consult this; `hydratePendingTxs()` refreshes
 // it from disk.
 let pendingCache: PendingTx[] = [];
-let hydrated = false;
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -65,27 +78,50 @@ async function getStore(): Promise<Store> {
   return storePromise;
 }
 
+/** Ensure disk + cache belong to the canonical genesis before any read/write.
+ *
+ * A missing/mismatched scope is fail-closed: discard old pending hashes,
+ * stamp the new identity, then save both together. When the live registry is
+ * unavailable, an existing stamp wins over the SDK fallback so a transient
+ * outage cannot roll the scope backward in a stale build. */
+async function ensureNetworkScope(store: Store): Promise<void> {
+  const persisted = parsePersistenceScopeEnvelope(
+    await store.get<unknown>(NETWORK_SCOPE_KEY),
+  );
+  const resolved = await resolvePersistenceScope();
+  const targetId = selectPersistenceScopeId(resolved, persisted);
+  if (persisted?.id === targetId) return;
+
+  await store.set(PENDING_KEY, { schemaVersion: 0, entries: [] });
+  await store.set(NETWORK_SCOPE_KEY, { schemaVersion: 0, id: targetId });
+  await store.save();
+
+  const changed = pendingCache.length !== 0;
+  pendingCache = [];
+  if (changed) emit();
+}
+
 /** Synchronous, render-safe read of the cached registry (newest-first).
  *  Empty before hydration. The poller's "≥1 pending" gate reads this. */
 export function pendingTxsSnapshot(): PendingTx[] {
   return pendingCache;
 }
 
-/** Load the persisted registry into the cache (call once on mount, and the
- *  store reconciles it after every write). Falls back to an empty registry
- *  if the store is unreadable (e.g. desktop dev hosts without a store
- *  surface) so the app degrades to master behaviour. Idempotent emit: only
- *  notifies when the cache actually changed. */
+/** Load the persisted registry into the cache. Safe to call repeatedly: each
+ *  read first checks the canonical genesis scope. Falls back to an empty
+ *  registry if the store is unreadable (e.g. desktop dev hosts without a
+ *  store surface) so the app degrades to master behaviour. Idempotent emit:
+ *  only notifies when the cache actually changed. */
 export async function hydratePendingTxs(): Promise<void> {
   let next: PendingTx[] = [];
   try {
     const store = await getStore();
+    await ensureNetworkScope(store);
     const env = parsePendingTxEnvelope(await store.get<unknown>(PENDING_KEY));
     next = env?.entries ?? [];
   } catch {
     // Keep the empty default.
   }
-  hydrated = true;
   if (!sameRegistry(pendingCache, next)) {
     pendingCache = next;
     emit();
@@ -98,6 +134,7 @@ export async function hydratePendingTxs(): Promise<void> {
 async function writePending(entries: PendingTx[]): Promise<boolean> {
   try {
     const store = await getStore();
+    await ensureNetworkScope(store);
     await store.set(PENDING_KEY, { schemaVersion: 0, entries });
     await store.save();
     pendingCache = entries;
@@ -122,9 +159,9 @@ async function writePending(entries: PendingTx[]): Promise<boolean> {
 export async function enqueuePendingTx(
   entry: PendingTx,
 ): Promise<{ added: boolean }> {
-  // Read-through hydrate so we never clobber on-disk entries with a stale
-  // (empty) cache on the first enqueue of a session.
-  if (!hydrated) await hydratePendingTxs();
+  // Read-through hydrate every time so we never merge a fresh tx into cache
+  // that belongs to the previous genesis.
+  await hydratePendingTxs();
   const next = appendPendingCapped(pendingCache, entry, PENDING_TX_CAP);
   if (next === pendingCache) return { added: false };
   const ok = await writePending(next);
@@ -138,7 +175,10 @@ export async function removePendingTxs(
   keys: ReadonlySet<string>,
 ): Promise<{ removed: number }> {
   if (keys.size === 0) return { removed: 0 };
-  if (!hydrated) await hydratePendingTxs();
+  // A re-genesis may have happened since the last poll tick. Refresh before
+  // deriving survivors so old entries cannot be resurrected after a scope
+  // migration.
+  await hydratePendingTxs();
   const next = removePendingByKeys(pendingCache, keys);
   if (next === pendingCache) return { removed: 0 };
   const removed = pendingCache.length - next.length;
@@ -146,10 +186,12 @@ export async function removePendingTxs(
   return { removed };
 }
 
-/** Read of the tracked-tx registry, newest-first. Hydrates the cache on
- *  first call so the synchronous snapshot is warm. */
+/** Read of the tracked-tx registry, newest-first. Refreshes the cache and its
+ *  genesis scope so the synchronous snapshot is warm and current. */
 export async function listPendingTxs(): Promise<PendingTx[]> {
-  if (!hydrated) await hydratePendingTxs();
+  // Re-check even after hydration so a canonical registry change observed
+  // during a long-running app session clears stale tx hashes before polling.
+  await hydratePendingTxs();
   return pendingCache;
 }
 
@@ -157,7 +199,6 @@ export async function listPendingTxs(): Promise<PendingTx[]> {
  *  Production code never calls this. */
 export function resetPendingTxsForTest(): void {
   pendingCache = [];
-  hydrated = false;
   storePromise = null;
   listeners.clear();
 }
